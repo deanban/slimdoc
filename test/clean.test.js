@@ -318,7 +318,7 @@ test('stripMedia handles the Teams per-utterance block', () => {
   const avatar = `![](data:image/jpeg;base64,${'/9j/4AAQ'.repeat(700)})`;
   const input = [
     avatar, '', '__Rivera, Sam__', '', '0 minutes 43 seconds0:43', '',
-    'Morning all, shall we get started\\.', '',
+    'Morning all, shall we get started\\?', '',
   ].join('\n');
   const out = clean(input, { preset: 'balanced' });
   assert.ok(!out.includes('data:'));
