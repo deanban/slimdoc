@@ -19,14 +19,16 @@ const HTML_TAG = /<[^>]*>/g;
 
 const ALT_ATTR = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 
-const MD_IMAGE_INLINE = /!\[([^\]\n]*)\]\([^)\n]*\)/g;
-const MD_IMAGE_REF = /!\[([^\]\n]*)\]\[[^\]\n]*\]/g;
-const MD_IMAGE_SHORT = /!\[([^\]\n]*)\]/g;
+// Alt text and link labels are capped: a caption is never 400 characters, and an
+// unbounded run of `![` with no closing bracket would otherwise be scanned quadratically.
+const MD_IMAGE_INLINE = /!\[([^\]\n]{0,400})\]\([^)\n]*\)/g;
+const MD_IMAGE_REF = /!\[([^\]\n]{0,400})\]\[[^\]\n]*\]/g;
+const MD_IMAGE_SHORT = /!\[([^\]\n]{0,400})\]/g;
 
 /** A markdown link whose target is a data: URI keeps its text and loses the payload. */
-const MD_LINK_DATA = /\[([^\]\n]*)\]\([ \t]*data:[^)\n]*\)/gi;
+const MD_LINK_DATA = /\[([^\]\n]{0,400})\]\([ \t]*data:[^)\n]*\)/gi;
 /** A markdown link whose target is a raw base64 blob keeps its text. */
-const MD_LINK_BASE64 = /\[([^\]\n]*)\]\([A-Za-z0-9+/=]{200,}\)/g;
+const MD_LINK_BASE64 = /\[([^\]\n]{0,400})\]\([A-Za-z0-9+/=]{200,}\)/g;
 
 /**
  * Any remaining data: URI, in or out of markup. Bounded by whitespace and the closing

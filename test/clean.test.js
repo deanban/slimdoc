@@ -51,6 +51,32 @@ test('idempotent for every preset with transcript and emoji enabled', () => {
   }
 });
 
+test('idempotent when stripMarkdown destroys a block boundary', () => {
+  const cases = [
+    '# A heading\nText under the heading.\n\n# Another\nMore text.\n',
+    'Intro text here\n> a quoted line\nMore text after\n\nEnd.\n',
+    'Above the rule\n\n---\n\nBelow the rule\n',
+    'Setext heading\n==============\nBody text follows here.\n\nEnd.\n',
+    'Intro line\n<https://example.com/x>\nafter\n\nend.\n',
+    'Intro line\n<div>block</div>\nafter\n\nend.\n',
+  ];
+  for (const maxBlankLines of [0, 1, 2]) {
+    for (const stripMarkdown of [true, false]) {
+      for (const input of cases) {
+        const opts = { preset: 'balanced', stripMarkdown, maxBlankLines };
+        const once = clean(input, opts);
+        assert.equal(clean(once, opts), once,
+          `maxBlankLines=${maxBlankLines} stripMarkdown=${stripMarkdown}: ${JSON.stringify(input)}`);
+      }
+    }
+  }
+});
+
+test('a stripped heading keeps a blank line under it when blanks are allowed', () => {
+  const out = clean('# A heading\nBody text.\n', { preset: 'balanced', stripMarkdown: true });
+  assert.equal(out, 'A heading\n\nBody text.\n');
+});
+
 test('output always ends with exactly one newline and no leading blank lines', () => {
   for (const preset of PRESETS) {
     const out = clean(`\n\n\n${MESSY}\n\n\n`, { preset });
@@ -409,6 +435,33 @@ test('options merge over the selected preset', () => {
   assert.ok(clean('a—b\n', { preset: 'safe', asciiPunctuation: true }).includes('a-b'));
   assert.ok(clean('a—b\n', { preset: 'balanced', asciiPunctuation: false }).includes('a—b'));
   assert.equal(clean('x\n\n\n\n\ny\n', { maxBlankLines: 3 }), 'x\n\n\n\ny\n');
+});
+
+test('stripMarkdown drops an image without leaving a double space', () => {
+  const opts = { preset: 'aggressive', stripMedia: false };
+  assert.equal(clean('a ![alt](u.png) b\n', opts), 'a b\n');
+  assert.equal(clean('x\n\n![alt](u.png)\n\ny\n', opts), 'x\ny\n');
+});
+
+test('adversarial punctuation runs do not backtrack catastrophically', () => {
+  const cases = [
+    '`'.repeat(100000),
+    '!['.repeat(100000),
+    ']('.repeat(100000),
+    '['.repeat(50000) + ']'.repeat(50000),
+    '|'.repeat(100000),
+    '\\'.repeat(200000),
+    '*'.repeat(100000),
+    '_'.repeat(100000),
+    '<'.repeat(100000),
+    'a'.repeat(2000000),
+  ];
+  for (const input of cases) {
+    const started = process.hrtime.bigint();
+    clean(input, { preset: 'aggressive' });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(elapsedMs < 3000, `${JSON.stringify(input.slice(0, 8))}… took ${elapsedMs.toFixed(0)}ms`);
+  }
 });
 
 test('a 5 MB document is cleaned in well under five seconds', () => {

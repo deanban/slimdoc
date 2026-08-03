@@ -1,3 +1,5 @@
+import { DROP_MARK, collapseDropMarks } from './clean-protect.js';
+
 /**
  * Markdown-shaped transforms: backslash unescaping, decoration stripping and table
  * compaction. All of these run on text whose code regions have already been lifted out,
@@ -14,8 +16,8 @@ const BOLD_UNDER = /__(?!\s)([^_\n]+?)(?<!\s)__/g;
 const ITALIC_UNDER = /(?<![\w_])_(?!\s)([^_\n]+?)(?<!\s)_(?![\w_])/g;
 const STRIKE = /~~(?!\s)([^~\n]+?)(?<!\s)~~/g;
 
-const MD_LINK = /(?<!!)\[([^\]\n]*)\]\(([^)\n]*)\)/g;
-const MD_IMAGE = /!\[([^\]\n]*)\]\([^)\n]*\)/g;
+const MD_LINK = /(?<!!)\[([^\]\n]{0,400})\]\(([^)\n]*)\)/g;
+const MD_IMAGE = /!\[([^\]\n]{0,400})\]\([^)\n]*\)/g;
 const AUTOLINK = /<((?:https?|ftp|mailto):[^>\s]+)>/g;
 
 const ATX_HEADING = /^([ \t]{0,3})#{1,6}(?:[ \t]+|$)/;
@@ -46,7 +48,9 @@ export function unescapeMarkdown(text: string): string {
 
 export function stripMarkdown(text: string): string {
   let s = text.replace(HTML_COMMENT, '');
-  s = s.replace(MD_IMAGE, '');
+  // Only reachable with `stripMedia` off; the mark keeps the hole from becoming a
+  // double space or a stray blank line.
+  s = collapseDropMarks(s.replace(MD_IMAGE, DROP_MARK));
   s = s.replace(BOLD_ITALIC_STAR, '$1').replace(BOLD_ITALIC_UNDER, '$1');
   s = s.replace(BOLD_STAR, '$1').replace(BOLD_UNDER, '$1');
   s = s.replace(ITALIC_STAR, '$1').replace(ITALIC_UNDER, '$1');
