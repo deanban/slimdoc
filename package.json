@@ -13,7 +13,7 @@
     "cli"
   ],
   "license": "MIT",
-  "author": "Dean Bergman",
+  "author": "Dean Banik <dean@datadepo.us>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/deanban/slimdoc.git"

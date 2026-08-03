@@ -94,7 +94,7 @@ function toBlocks(utterances: Utterance[], merge: boolean): Block[] {
   return blocks;
 }
 
-/** `Okafor Diallo, Blessing` -> `Blessing`; `Dean Bergman` -> `Dean`. */
+/** `Okafor Diallo, Blessing` -> `Blessing`; `Sam Rivera` -> `Sam`. */
 function firstNameOf(name: string): string {
   const comma = name.indexOf(',');
   if (comma > 0) return name.slice(comma + 1).trim().split(/\s+/)[0] ?? '';
