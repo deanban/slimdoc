@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.tgz
+.DS_Store
+
+# Personal / real-world sample documents used for local verification only
+test/fixtures/local/
+
+# Internal build-process artifacts: specs, task lists, agent notes, scratch output
+SPEC.md
+TASKS.md
+NOTES.md
+PLAN.md
+*.report.md
+.planning/
+.scratch/
+scratch/

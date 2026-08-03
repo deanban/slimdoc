@@ -1,0 +1,50 @@
+{
+  "name": "slimdoc",
+  "version": "0.1.0",
+  "description": "Shrink any document — Word, Markdown, HTML, RTF or pasted text — into clean, token-cheap input for an LLM.",
+  "keywords": [
+    "llm",
+    "tokens",
+    "whitespace",
+    "docx",
+    "markdown",
+    "cleanup",
+    "transcript",
+    "cli"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "slimdoc": "dist/cli.js",
+    "slim": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --test test/*.test.js",
+    "prepublishOnly": "npm run clean && npm run build && node --test test/*.test.js"
+  },
+  "dependencies": {
+    "mammoth": "^1.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
