@@ -228,6 +228,23 @@ function validate(inv: Invocation): void {
   for (const [bad, message] of problems) {
     if (bad) throw new UsageError(message);
   }
+  if (inv.out !== undefined) rejectBinaryTarget(inv.out);
+}
+
+/** Extensions whose readers expect a container, not the Markdown text slimdoc emits. */
+const NOT_A_TEXT_TARGET = ['.docx', '.doc', '.rtf', '.pdf', '.odt', '.pages'];
+
+/**
+ * Writing text into a `.docx` name produces a file Word opens with "unreadable content".
+ * --write and --out-dir already guard this; --out has to as well.
+ */
+function rejectBinaryTarget(target: string): void {
+  const ext = extname(target).toLowerCase();
+  if (!NOT_A_TEXT_TARGET.includes(ext)) return;
+  const suggestion = `${target.slice(0, target.length - ext.length)}.md`;
+  throw new UsageError(
+    `slimdoc writes Markdown text, so a ${ext} file would not open — write to ${basename(suggestion)} instead`,
+  );
 }
 
 function messageOf(e: unknown): string {

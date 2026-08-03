@@ -337,3 +337,12 @@ test('a large input is processed without blowing up', async () => {
   assert.ok(stdout.length > 0);
   assert.ok(stdout.length < big.length, 'collapsing spaces should shrink the input');
 });
+
+test('--out refuses a .docx target because the output is Markdown text', async () => {
+  const target = join(dir, 'cleaned.docx');
+  const { code, stderr } = await runInProcess(['-o', target]);
+  assert.equal(code, 2);
+  assert.match(stderr, /would not open/);
+  assert.match(stderr, /cleaned\.md/);
+  await assert.rejects(readFile(target), { code: 'ENOENT' });
+});

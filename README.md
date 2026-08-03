@@ -60,6 +60,14 @@ and `.html`.
 With `--out-dir` the extension is corrected to match the contents, so
 `report.docx` is written as `clean/report.md` rather than a `.docx` that isn't one.
 
+`slimdoc` emits Markdown text, never a Word file, so `--out` rejects a `.docx`,
+`.doc`, `.rtf` or `.pdf` target rather than writing a file your reader cannot open:
+
+```
+$ slimdoc report.docx -o clean.docx
+slimdoc: slimdoc writes Markdown text, so a .docx file would not open — write to clean.md instead
+```
+
 ## What it removes
 
 Always, in every mode:
