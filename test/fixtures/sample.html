@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quarterly Review &mdash; internal</title>
+  <style>
+    body { font-family: -apple-system, "Segoe UI", sans-serif; }
+    .avatar { width: 32px; height: 32px; }
+  </style>
+  <script>
+    window.analytics = { track: function (e) { console.log("<h1>not a heading</h1>", e); } };
+  </script>
+</head>
+<body>
+  <!-- a comment that must not survive extraction -->
+  <h1>Quarterly&nbsp;Review</h1>
+
+  <p>The team&rsquo;s &ldquo;Q3 numbers&rdquo; came in ahead of plan &mdash; the
+     first time since 2019. Margin held at <strong>38&thinsp;%</strong> and
+     R&amp;D spend was <em>flat</em>.</p>
+
+  <p>
+    <img class="avatar" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="avatar">
+    <span>Posted by Dana &lt;dana@example.com&gt;</span>
+  </p>
+
+  <figure>
+    <img src="/assets/revenue.png" alt="Revenue by quarter, 2019 to 2024">
+    <figcaption>Figure 1 &mdash; revenue trend</figcaption>
+  </figure>
+
+  <h2>Highlights</h2>
+  <ul>
+    <li>Revenue up <b>12&#37;</b> year on year</li>
+    <li>Churn down to 1.8&#x25;</li>
+    <li>Two enterprise logos signed &ndash; both <i>multi&#8209;year</i></li>
+  </ul>
+
+  <h2>Numbers</h2>
+  <table>
+    <tr><th>Quarter</th><th>Revenue</th><th>Notes</th></tr>
+    <tr><td>Q1</td><td>1.2M</td><td>flat</td></tr>
+    <tr><td>Q2</td><td>1.4M</td><td>the &ldquo;big deal&rdquo; landed</td></tr>
+  </table>
+
+  <h2>Runbook</h2>
+  <pre><code>if (revenue &gt; target) {
+    celebrate();     // two spaces of padding here matter
+}
+</code></pre>
+
+  <p>Full detail lives in
+     <a href="https://example.com/reports/q3">the Q3 report</a>,
+     mirrored at <a href="https://example.com/mirror">https://example.com/mirror</a>,
+     and the <a href="/internal/wiki">internal wiki</a>.</p>
+
+  <svg width="10" height="10"><rect width="10" height="10" fill="#333"/></svg>
+  <noscript>Enable JavaScript to see the dashboard.</noscript>
+
+  <p>Signed off by the board on 2024&#8209;10&#8209;01.</p>
+</body>
+</html>
