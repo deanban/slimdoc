@@ -13,6 +13,18 @@
     "cli"
   ],
   "license": "MIT",
+  "author": "Dean Bergman",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deanban/slimdoc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/deanban/slimdoc/issues"
+  },
+  "homepage": "https://github.com/deanban/slimdoc#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=18.17"
