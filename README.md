@@ -96,16 +96,16 @@ A Teams export spends five lines and about 5 KB on every utterance:
 
 ```
 [a 5 KB base64 profile photo]
-__Rivera, Sam__
+__Picard, Jean-Luc__
 0 minutes 43 seconds0:43
-Rivera, Sam 0 minutes 43 seconds
+Picard, Jean-Luc 0 minutes 43 seconds
 Morning all, shall we get started?
 ```
 
 `slimdoc meeting.docx -t` turns each of those into:
 
 ```
-Sam [0:43]: Morning all, shall we get started?
+Jean-Luc [0:43]: Morning all, shall we get started?
 ```
 
 Consecutive turns by one speaker are merged, per-line timestamps drop to one per turn,

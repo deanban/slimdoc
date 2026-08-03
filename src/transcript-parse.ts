@@ -146,7 +146,7 @@ export function matchTeamsStamp(line: string): string | null {
   return formatClock(Number(m[1] ?? 0), Number(m[2] ?? 0), Number(m[3] ?? 0));
 }
 
-/** `Rivera, Sam 0 minutes 43 seconds` -> speaker + `0:43`. */
+/** `Picard, Jean-Luc 0 minutes 43 seconds` -> speaker + `0:43`. */
 export function matchTeamsEcho(line: string): { speaker: string; time: string } | null {
   const m = TEAMS_ECHO_LINE.exec(unescapeMarkdown(line).trim());
   if (!m) return null;

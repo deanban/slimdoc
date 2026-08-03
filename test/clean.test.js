@@ -317,13 +317,13 @@ test('stripMedia removes a multi-KB base64 avatar and leaves no blank line behin
 test('stripMedia handles the Teams per-utterance block', () => {
   const avatar = `![](data:image/jpeg;base64,${'/9j/4AAQ'.repeat(700)})`;
   const input = [
-    avatar, '', '__Rivera, Sam__', '', '0 minutes 43 seconds0:43', '',
+    avatar, '', '__Picard, Jean-Luc__', '', '0 minutes 43 seconds0:43', '',
     'Morning all, shall we get started\\?', '',
   ].join('\n');
   const out = clean(input, { preset: 'balanced' });
   assert.ok(!out.includes('data:'));
   assert.ok(!out.includes('9j/4AAQ'));
-  assert.ok(out.includes('__Rivera, Sam__'));
+  assert.ok(out.includes('__Picard, Jean-Luc__'));
   assert.ok(out.includes('Morning all, shall we get started?'));
   assert.ok(!/\n\n\n/.test(out), JSON.stringify(out));
 });
