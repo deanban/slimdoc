@@ -30,8 +30,35 @@ slimdoc -c -C                       # same thing, without the pipes
 slimdoc meeting.docx -t -s          # a meeting transcript, with a size report
 ```
 
-Input comes from file arguments, piped stdin, or `--clipboard`. Output goes to stdout
-unless you ask for `--out`, `--out-dir`, `--write` (in place) or `--copy`.
+Input comes from file arguments, piped stdin, or `--clipboard`.
+
+## Your files are not modified
+
+By default `slimdoc` writes to stdout and leaves the input exactly as it found it.
+Nothing is overwritten unless you ask for it.
+
+| | what happens to the original |
+|---|---|
+| `slimdoc notes.md` | untouched — result goes to stdout |
+| `slimdoc notes.md -o clean.md` | untouched — new file |
+| `slimdoc *.docx -D clean/` | untouched — new files in `clean/` |
+| `slimdoc notes.md -C` | untouched — result to the clipboard |
+| `slimdoc notes.md -w` | **overwritten in place** |
+
+`--write` is the only destructive option, and it refuses to run on a format it would
+corrupt:
+
+```
+$ slimdoc report.docx -w
+slimdoc: report.docx: refusing to rewrite a docx file in place — use --out-dir
+```
+
+The output is Markdown text, so writing it into a `.docx` filename would leave you with
+a file Word cannot open and the original content gone. The same refusal covers `.rtf`
+and `.html`.
+
+With `--out-dir` the extension is corrected to match the contents, so
+`report.docx` is written as `clean/report.md` rather than a `.docx` that isn't one.
 
 ## What it removes
 
