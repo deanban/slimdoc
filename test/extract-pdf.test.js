@@ -16,6 +16,7 @@ import test from 'node:test';
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
 import { toLines, layoutPage } from '../dist/pdf-layout.js';
+import { preserveGridRegions } from '../dist/pdf-preformat.js';
 
 const PDF = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'corpus', 'kitchen-sink.pdf');
 
@@ -143,6 +144,116 @@ test('pdf: a word split across a line break rejoins only when asked', async () =
 test('pdf: dehyphenation leaves a real compound alone', async () => {
   const { text } = await read({ dehyphenate: true });
   assert.match(text, /star-board nacelle/);
+});
+
+// --------------------------------------------------------------------------
+// gridlike regions
+// --------------------------------------------------------------------------
+
+/**
+ * A PDF carries no table semantics, so slimdoc does not claim any: a region
+ * that lines up is preserved verbatim in a fenced block rather than rewritten
+ * as a pipe table. A malformed pipe table is worse than plain text — it asserts
+ * a structure that was never in the file and lands numbers under the wrong
+ * heading — whereas preserving the alignment asserts nothing.
+ */
+test('pdf: a region on a coordinate grid keeps its alignment in a fenced block', async () => {
+  for (const preset of ['safe', 'balanced', 'aggressive']) {
+    const { text } = await read({}, { preset });
+    const fenced = text.match(/```\n([\s\S]*?)\n```/g) ?? [];
+
+    assert.ok(fenced.length >= 1, `${preset}: nothing was fenced`);
+    const table = fenced.find((block) => block.includes('Subsystem'));
+    assert.ok(table, `${preset}: the diagnostics grid was not preserved`);
+    assert.match(table, /Subsystem +Owner +Status +Margin +Reviewed/, preset);
+    assert.match(table, /Warp core +La Forge +Green/, preset);
+  }
+});
+
+test('pdf: the fenced region is never turned into a pipe table', async () => {
+  const { text } = await read();
+  assert.doesNotMatch(text, /\| --- \|/);
+});
+
+test('pdf: a block that only looks like a grid is preserved the same way', async () => {
+  const { text } = await read();
+  const fenced = text.match(/```\n([\s\S]*?)\n```/g) ?? [];
+
+  assert.ok(fenced.some((block) => /Deck 36 +engineering/.test(block)));
+});
+
+test('pdf: the approximation is warned about', async () => {
+  const { doc } = await read();
+  assert.ok(
+    doc.warnings.some((w) => /columns may be approximate/.test(w)),
+    doc.warnings.join('; '),
+  );
+});
+
+test('pdf: --no-tables leaves the region as ordinary lines', async () => {
+  const { doc, text } = await read({ preserveTables: false });
+
+  // The fixture's runbook page contains a fence of its own, so the assertion is
+  // that the diagnostics grid is not wrapped in one, not that none exists.
+  assert.doesNotMatch(text, /```[\s\S]*Subsystem/);
+  assert.ok(!doc.warnings.some((w) => /columns may be approximate/.test(w)));
+});
+
+/**
+ * A grid whose own content contains a three-backtick run. A fixed wrapper would
+ * be closed by it, and everything after would read as prose.
+ */
+test('grid: a region containing a fence gets a longer one around it', () => {
+  const rows = ['open   ```', 'body   code', 'close  ```'].join('\n');
+  const { text, regions } = preserveGridRegions(rows);
+
+  assert.equal(regions, 1);
+  assert.match(text, /^````\n/);
+  assert.ok(text.trim().endsWith('````'), text);
+});
+
+test('grid: fewer than three aligned rows is a coincidence, not a layout', () => {
+  const { text, regions } = preserveGridRegions('a    b\nc    d');
+
+  assert.equal(regions, 0);
+  assert.equal(text, 'a    b\nc    d');
+});
+
+test('grid: a blank line ends a region', () => {
+  const rows = 'a  b\nc  d\ne  f\n\ng  h\ni  j\n';
+  assert.equal(preserveGridRegions(rows).regions, 1);
+});
+
+test('pdf: prose and indented code are not mistaken for a grid', async () => {
+  const { text } = await read();
+
+  assert.doesNotMatch(text, /```[\s\S]*The Utopia Planitia yards report/);
+  assert.match(text, /^ {4}total = 0$/m);
+});
+
+// --------------------------------------------------------------------------
+// resource limits
+// --------------------------------------------------------------------------
+
+test('limits: the page cap counts selected pages and says what it dropped', async () => {
+  const { doc } = await read({ limits: { maxPages: 2 } });
+
+  assert.deepEqual(doc.sections.map((s) => s.index), [1, 2]);
+  assert.ok(doc.warnings.some((w) => /5 pages were not read/.test(w)), doc.warnings.join('; '));
+});
+
+test('limits: a page with too many items is cut short rather than followed', async () => {
+  const { doc } = await read({ limits: { maxItemsPerPage: 5 } });
+
+  assert.ok(doc.warnings.some((w) => /item cap/.test(w)), doc.warnings.join('; '));
+  assert.ok(doc.text.length < 1500, 'the cap did not actually bound the work');
+});
+
+test('limits: an oversized file is refused before it is parsed', async () => {
+  await assert.rejects(
+    () => extractFromFile(PDF, { limits: { maxInputBytes: 1000 } }),
+    (err) => /over the .* input limit/.test(err.message),
+  );
 });
 
 // --------------------------------------------------------------------------

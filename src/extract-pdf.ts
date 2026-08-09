@@ -17,6 +17,7 @@ import {
   type PageLines,
   type TextItem,
 } from './pdf-layout.js';
+import { preserveGridRegions } from './pdf-preformat.js';
 import type { Section, SectionedDoc } from './sections.js';
 import { resolveExtractOptions, type ExtractOptions, type ExtractOverrides } from './types.js';
 import { selectPages } from './utils/ranges.js';
@@ -58,21 +59,32 @@ function toItems(raw: RawItem[], limit: number): TextItem[] {
   return items;
 }
 
-async function readPage(pdf: PdfDocument, index: number, opts: ExtractOptions): Promise<PageLines> {
+async function readPage(
+  pdf: PdfDocument,
+  index: number,
+  opts: ExtractOptions,
+): Promise<{ page: PageLines; truncated: boolean }> {
   const page = await pdf.getPage(index);
   const content = await page.getTextContent();
-  const items = toItems(content.items, opts.limits.maxItemsPerPage);
+  const cap = opts.limits.maxItemsPerPage;
+  const items = toItems(content.items, cap);
   const height = page.getViewport({ scale: 1 }).height || DEFAULT_PAGE_HEIGHT;
 
-  return { index, height, lines: layoutPage(items, height) };
+  return {
+    page: { index, height, lines: layoutPage(items, height) },
+    truncated: content.items.length > cap,
+  };
 }
 
-function warningsFor(
-  textless: number,
-  suppressed: number,
-  dropped: number,
-  truncated: number,
-): string[] {
+interface Findings {
+  textless: number;
+  suppressed: number;
+  dropped: number;
+  truncated: number;
+  regions: number;
+}
+
+function warningsFor({ textless, suppressed, dropped, truncated, regions }: Findings): string[] {
   const warnings: string[] = [];
   warnings.push('PDF structure is reconstructed from glyph positions — reading order is inferred');
   if (textless > 0) {
@@ -87,17 +99,32 @@ function warningsFor(
   if (truncated > 0) {
     warnings.push(`${truncated} page${truncated === 1 ? '' : 's'} hit the per-page item cap and were cut short`);
   }
+  if (regions > 0) {
+    warnings.push(
+      `${regions} possible table${regions === 1 ? '' : 's'} preserved as preformatted text; ` +
+        'columns may be approximate',
+    );
+  }
   return warnings;
 }
 
 const NO_TEXT = (index: number): string => `[page ${index}: no extractable text]`;
 
-function sectionsFrom(pages: PageLines[], opts: ExtractOptions): Section[] {
-  return pages.map((page) => {
+function sectionsFrom(pages: PageLines[], opts: ExtractOptions): { sections: Section[]; regions: number } {
+  let regions = 0;
+  const sections = pages.map((page) => {
     const body = toParagraphs(page.lines);
-    const text = body.trim() === '' ? NO_TEXT(page.index) : body;
-    return { index: page.index, text: opts.dehyphenate ? dehyphenate(text) : text };
+    if (body.trim() === '') return { index: page.index, text: NO_TEXT(page.index) };
+
+    // Dehyphenation runs before the grid pass: a hyphen at a line end joins two
+    // lines together, which can change whether a run of rows is contiguous.
+    const joined = opts.dehyphenate ? dehyphenate(body) : body;
+    const preserved = opts.preserveTables ? preserveGridRegions(joined) : { text: joined, regions: 0 };
+    regions += preserved.regions;
+    return { index: page.index, text: preserved.text };
   });
+
+  return { sections, regions };
 }
 
 export async function extractPdf(
@@ -118,9 +145,9 @@ export async function extractPdf(
   let truncated = 0;
 
   for (const index of selection.pages) {
-    const page = await readPage(pdf, index, opts);
-    if (page.lines.length >= opts.limits.maxItemsPerPage) truncated += 1;
-    pages.push(page);
+    const read = await readPage(pdf, index, opts);
+    if (read.truncated) truncated += 1;
+    pages.push(read.page);
   }
 
   const textless = pages.filter((page) => page.lines.length === 0).length;
@@ -133,13 +160,13 @@ export async function extractPdf(
   }
 
   const suppressed = opts.dropRunningHeaders ? suppressRunningText(pages) : 0;
-  const sections = sectionsFrom(pages, opts);
+  const { sections, regions } = sectionsFrom(pages, opts);
 
   return {
     text: sections.map((s) => s.text).join('\n\n'),
     format: 'pdf',
     source,
-    warnings: warningsFor(textless, suppressed, selection.dropped, truncated),
+    warnings: warningsFor({ textless, suppressed, dropped: selection.dropped, truncated, regions }),
     sections,
   };
 }
