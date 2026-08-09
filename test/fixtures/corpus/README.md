@@ -19,6 +19,11 @@ make-corpus-pdf.py   ->  kitchen-sink.pdf     97 kB
 Both the generators and their output are committed, as elsewhere in this
 repository. Regenerate with `python3 test/fixtures/corpus/make-corpus-*.py`.
 
+Measure with `node test/bench.js` (after `npm run build`). It reports extracted
+size, tokens per preset, timing and peak RSS, and is deliberately **not** part
+of `npm test` — it measures rather than asserts. The `pptx` and `pdf` rows read
+`pending` until those formats land.
+
 ## Rules the generators follow
 
 - **Python 3 standard library only** — `os`, `struct`, `zlib`, `zipfile`,
