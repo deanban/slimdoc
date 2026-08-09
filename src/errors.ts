@@ -14,3 +14,8 @@ export class UnsupportedFormatError extends Error {
     this.format = format;
   }
 }
+
+/** Bad input reaches `catch` as `unknown`; this is the one place that admits it. */
+export function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}

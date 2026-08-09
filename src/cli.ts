@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { realpathSync, statSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
 
-import { cleanWithStats } from './clean.js';
-import { extractFromBuffer, extractFromFile, UnsupportedFormatError } from './extract.js';
+import { parseInvocation, USAGE, UsageError, validate, type Invocation } from './cli-options.js';
+import { dim, label, num, onDiskSize, reportStats, writeErr } from './cli-report.js';
+import { messageOf, UnsupportedFormatError } from './errors.js';
+import { extractFromBuffer, extractFromFile } from './extract.js';
 import { readClipboard, readStdinBuffer, writeClipboard } from './io.js';
-import { formatBytes } from './tokens.js';
+import { cleanDocument, type SectionedDoc, type SectionStats } from './sections.js';
 import { looksLikeTranscript } from './transcript.js';
-import { resolveOptions } from './types.js';
-import type { CleanOptions, ExtractedDoc, Preset, Stats } from './types.js';
+import type { Stats } from './types.js';
 
 const HELP = `slimdoc [file...] [options]
 
@@ -54,203 +54,6 @@ Other
 Token counts are a heuristic estimate, not a real tokenizer.
 `;
 
-const USAGE = 'usage: slimdoc [file...] [options]   (slimdoc --help for the full list)';
-
-/** Keys of CleanOptions that are plain booleans, so `--x` / `--no-x` can drive them. */
-type BooleanCleanKey = {
-  [K in keyof CleanOptions]: CleanOptions[K] extends boolean ? K : never;
-}[keyof CleanOptions];
-
-const CLEAN_FLAGS: Record<string, BooleanCleanKey> = {
-  unwrap: 'unwrap',
-  ascii: 'asciiPunctuation',
-  'strip-markdown': 'stripMarkdown',
-  'strip-emoji': 'stripEmoji',
-  'preserve-code': 'preserveCode',
-  'compact-tables': 'compactTables',
-  'normalize-unicode': 'normalizeUnicode',
-  'unescape-markdown': 'unescapeMarkdown',
-  'strip-media': 'stripMedia',
-  'tabs-to-spaces': 'tabsToSpaces',
-  transcript: 'transcript',
-};
-
-const PRESET_FLAGS: Record<string, Preset> = {
-  safe: 'safe',
-  balanced: 'balanced',
-  aggressive: 'aggressive',
-};
-
-/** Boolean CLI switches whose long name is also their field name. */
-const CLI_FLAGS = ['clipboard', 'write', 'copy', 'json', 'stats', 'quiet', 'help', 'version'] as const;
-type CliFlag = (typeof CLI_FLAGS)[number];
-
-type Invocation = Record<CliFlag, boolean> & {
-  cleanOpts: CleanOptions;
-  files: string[];
-  out: string | undefined;
-  outDir: string | undefined;
-};
-
-function isCliFlag(name: string): name is CliFlag {
-  return (CLI_FLAGS as readonly string[]).includes(name);
-}
-
-type OptionSpec = { type: 'boolean' | 'string'; short?: string };
-
-function optionSpecs(): Record<string, OptionSpec> {
-  const specs: Record<string, OptionSpec> = {
-    clipboard: { type: 'boolean', short: 'c' },
-    out: { type: 'string', short: 'o' },
-    'out-dir': { type: 'string', short: 'D' },
-    write: { type: 'boolean', short: 'w' },
-    copy: { type: 'boolean', short: 'C' },
-    json: { type: 'boolean', short: 'j' },
-    'max-blank-lines': { type: 'string' },
-    'keep-tabs': { type: 'boolean' },
-    transcript: { type: 'boolean', short: 't' },
-    stats: { type: 'boolean', short: 's' },
-    quiet: { type: 'boolean', short: 'q' },
-    help: { type: 'boolean', short: 'h' },
-    version: { type: 'boolean', short: 'V' },
-  };
-  for (const name of [...Object.keys(CLEAN_FLAGS), ...Object.keys(PRESET_FLAGS)]) {
-    specs[name] ??= { type: 'boolean' };
-    specs[`no-${name}`] = { type: 'boolean' };
-  }
-  for (const name of [...CLI_FLAGS, 'keep-tabs']) {
-    specs[`no-${name}`] = { type: 'boolean' };
-  }
-  return specs;
-}
-
-interface ParsedToken {
-  kind: string;
-  name?: string;
-  value?: string | undefined;
-}
-
-class UsageError extends Error {}
-
-/**
- * Parse argv by walking the token stream rather than the values map: order decides
- * `--unwrap --no-unwrap`, while a preset only ever sets `preset`, so an explicit
- * flag beats the preset no matter which side of it the flag appears on.
- */
-function parseInvocation(argv: string[]): Invocation {
-  let parsed;
-  try {
-    parsed = parseArgs({
-      args: argv,
-      options: optionSpecs(),
-      allowPositionals: true,
-      strict: true,
-      tokens: true,
-    });
-  } catch (e) {
-    throw new UsageError(messageOf(e));
-  }
-
-  const overrides: Partial<CleanOptions> = {};
-  const inv = {
-    cleanOpts: resolveOptions(),
-    files: parsed.positionals,
-    out: undefined,
-    outDir: undefined,
-    ...Object.fromEntries(CLI_FLAGS.map((f) => [f, false])),
-  } as Invocation;
-
-  for (const token of parsed.tokens as ParsedToken[]) {
-    if (token.kind !== 'option' || token.name === undefined) continue;
-    const negated = token.name.startsWith('no-');
-    const name = negated ? token.name.slice(3) : token.name;
-    const on = !negated;
-
-    const cleanKey = CLEAN_FLAGS[name];
-    if (cleanKey !== undefined) {
-      overrides[cleanKey] = on;
-      continue;
-    }
-    const preset = PRESET_FLAGS[name];
-    if (preset !== undefined) {
-      if (on) overrides.preset = preset;
-      continue;
-    }
-
-    if (isCliFlag(name)) {
-      inv[name] = on;
-      continue;
-    }
-
-    switch (name) {
-      case 'keep-tabs':
-        overrides.tabsToSpaces = !on;
-        break;
-      case 'max-blank-lines':
-        overrides.maxBlankLines = parseCount(token.value);
-        break;
-      case 'out':
-        inv.out = token.value;
-        break;
-      case 'out-dir':
-        inv.outDir = token.value;
-        break;
-      default:
-        throw new UsageError(`unknown option --${token.name}`);
-    }
-  }
-
-  inv.cleanOpts = resolveOptions(overrides);
-  return inv;
-}
-
-function parseCount(value: string | undefined): number {
-  const n = Number(value);
-  if (value === undefined || value.trim() === '' || !Number.isInteger(n) || n < 0) {
-    throw new UsageError(`--max-blank-lines needs a whole number >= 0 (got "${value ?? ''}")`);
-  }
-  return n;
-}
-
-function validate(inv: Invocation): void {
-  const noFiles = inv.files.length === 0;
-  const hasOut = inv.out !== undefined;
-  const hasOutDir = inv.outDir !== undefined;
-  const problems: Array<[boolean, string]> = [
-    [hasOut && inv.files.length > 1, '--out takes a single input; use --out-dir for several files'],
-    [hasOut && hasOutDir, '--out and --out-dir cannot be combined'],
-    [inv.write && hasOut, '--write and --out cannot be combined'],
-    [inv.write && hasOutDir, '--write and --out-dir cannot be combined'],
-    [inv.write && noFiles, '--write needs file arguments; there is nothing to rewrite'],
-    [inv.clipboard && !noFiles, '--clipboard cannot be combined with file arguments'],
-    [inv.json && (inv.write || hasOutDir), '--json cannot be combined with --write or --out-dir'],
-  ];
-  for (const [bad, message] of problems) {
-    if (bad) throw new UsageError(message);
-  }
-  if (inv.out !== undefined) rejectBinaryTarget(inv.out);
-}
-
-/** Extensions whose readers expect a container, not the Markdown text slimdoc emits. */
-const NOT_A_TEXT_TARGET = ['.docx', '.doc', '.rtf', '.pdf', '.odt', '.pages'];
-
-/**
- * Writing text into a `.docx` name produces a file Word opens with "unreadable content".
- * --write and --out-dir already guard this; --out has to as well.
- */
-function rejectBinaryTarget(target: string): void {
-  const ext = extname(target).toLowerCase();
-  if (!NOT_A_TEXT_TARGET.includes(ext)) return;
-  const suggestion = `${target.slice(0, target.length - ext.length)}.md`;
-  throw new UsageError(
-    `slimdoc writes Markdown text, so a ${ext} file would not open — write to ${basename(suggestion)} instead`,
-  );
-}
-
-function messageOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 function inputErrorMessage(e: unknown): string {
   if (e instanceof UnsupportedFormatError) return e.message;
   const code = (e as NodeJS.ErrnoException | null)?.code;
@@ -258,59 +61,6 @@ function inputErrorMessage(e: unknown): string {
   if (code === 'EISDIR') return 'is a directory';
   if (code === 'EACCES') return 'permission denied';
   return messageOf(e);
-}
-
-function writeErr(line: string): void {
-  process.stderr.write(`${line}\n`);
-}
-
-function colourEnabled(): boolean {
-  return process.stderr.isTTY === true && !process.env['NO_COLOR'];
-}
-
-function dim(text: string): string {
-  return colourEnabled() ? `\u001b[2m${text}\u001b[0m` : text;
-}
-
-function num(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
-function pct(before: number, after: number): string {
-  if (before === 0) return '0%';
-  const p = Math.round(((after - before) / before) * 100);
-  return `${p > 0 ? '+' : ''}${p}%`;
-}
-
-function statsLine(s: Stats): string {
-  return (
-    `${num(s.chars.before)} chars -> ${num(s.chars.after)} (${pct(s.chars.before, s.chars.after)})  ` +
-    `~${num(s.tokens.before)} -> ~${num(s.tokens.after)} tokens (${pct(s.tokens.before, s.tokens.after)})`
-  );
-}
-
-/**
- * `stats.chars.before` counts the text we extracted, which for a .docx is measured after
- * embedded images were discarded — and those images are usually most of the file. Without
- * naming the on-disk size the report silently omits the largest saving the tool makes.
- */
-function sourceSizeLine(bytes: number | undefined, after: number): string {
-  if (bytes === undefined) return '';
-  return `${formatBytes(bytes)} on disk -> ${formatBytes(after)} of text\n`;
-}
-
-/** Byte size of the input file, or undefined for stdin, clipboard, or an unreadable path. */
-function onDiskSize(source: string): number | undefined {
-  if (source.startsWith('<')) return undefined;
-  try {
-    return statSync(source).size;
-  } catch {
-    return undefined;
-  }
-}
-
-function label(source: string): string {
-  return source.startsWith('<') ? source : basename(source);
 }
 
 /** Cleaned output is Markdown-ish text, so a binary/markup source gets a `.md` name. */
@@ -323,15 +73,16 @@ function outputName(source: string): string {
 }
 
 interface Result {
-  doc: ExtractedDoc;
+  doc: SectionedDoc;
   text: string;
   stats: Stats;
-  /** Size of the original file, when the input came from disk. */
+  sections: SectionStats[];
+  source: string;
   sourceBytes?: number;
 }
 
-async function collect(inv: Invocation): Promise<{ docs: ExtractedDoc[]; failed: boolean }> {
-  const docs: ExtractedDoc[] = [];
+async function collect(inv: Invocation): Promise<{ docs: SectionedDoc[]; failed: boolean }> {
+  const docs: SectionedDoc[] = [];
   let failed = false;
 
   if (inv.clipboard) {
@@ -358,32 +109,6 @@ async function collect(inv: Invocation): Promise<{ docs: ExtractedDoc[]; failed:
     }
   }
   return { docs, failed };
-}
-
-function reportStats(results: Result[]): void {
-  if (results.length === 1) {
-    const only = results[0];
-    if (only) {
-      writeErr(dim(sourceSizeLine(only.sourceBytes, only.stats.bytes.after) + statsLine(only.stats)));
-    }
-    return;
-  }
-  const total: Stats = {
-    chars: { before: 0, after: 0 },
-    bytes: { before: 0, after: 0 },
-    lines: { before: 0, after: 0 },
-    tokens: { before: 0, after: 0 },
-    savedPct: 0,
-  };
-  for (const r of results) {
-    for (const key of ['chars', 'bytes', 'lines', 'tokens'] as const) {
-      total[key].before += r.stats[key].before;
-      total[key].after += r.stats[key].after;
-    }
-    const disk = r.sourceBytes === undefined ? '' : `${formatBytes(r.sourceBytes)} on disk, `;
-    writeErr(dim(`${label(r.doc.source)}: ${disk}${statsLine(r.stats)}`));
-  }
-  writeErr(dim(`total: ${statsLine(total)}`));
 }
 
 function joinResults(results: Result[]): string {
@@ -413,7 +138,7 @@ function jsonPayload(results: Result[]): string {
 }
 
 /** True when rewriting the input in place would destroy a file we cannot regenerate. */
-function refusesInPlace(doc: ExtractedDoc): boolean {
+function refusesInPlace(doc: SectionedDoc): boolean {
   return doc.format !== 'text' && doc.format !== 'markdown';
 }
 
@@ -452,6 +177,31 @@ async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
 const TRANSCRIPT_HINT =
   'slimdoc: this looks like a meeting transcript — --transcript would strip timestamps and merge speaker turns';
 
+function cleanEach(inv: Invocation, docs: SectionedDoc[]): { results: Result[]; failed: boolean } {
+  const wantsHint = !inv.quiet && (inv.stats || process.stderr.isTTY === true);
+  const results: Result[] = [];
+  let hinted = false;
+  let failed = false;
+
+  for (const doc of docs) {
+    if (!inv.quiet) {
+      for (const warning of doc.warnings) writeErr(dim(`slimdoc: ${label(doc.source)}: ${warning}`));
+    }
+    if (wantsHint && !hinted && !inv.cleanOpts.transcript && looksLikeTranscript(doc.text)) {
+      writeErr(dim(TRANSCRIPT_HINT));
+      hinted = true;
+    }
+    try {
+      const cleaned = cleanDocument(doc, inv.cleanOpts);
+      results.push({ doc, ...cleaned, source: doc.source, sourceBytes: onDiskSize(doc.source) });
+    } catch (e) {
+      writeErr(`slimdoc: ${doc.source}: ${messageOf(e)}`);
+      failed = true;
+    }
+  }
+  return { results, failed };
+}
+
 export async function run(argv: string[]): Promise<number> {
   let inv: Invocation;
   try {
@@ -472,7 +222,7 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  let docs: ExtractedDoc[];
+  let docs: SectionedDoc[];
   let failed: boolean;
   try {
     ({ docs, failed } = await collect(inv));
@@ -485,26 +235,9 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const wantsHint = !inv.quiet && (inv.stats || process.stderr.isTTY === true);
-  const results: Result[] = [];
-  let hinted = false;
-
-  for (const doc of docs) {
-    if (!inv.quiet) {
-      for (const warning of doc.warnings) writeErr(dim(`slimdoc: ${label(doc.source)}: ${warning}`));
-    }
-    if (wantsHint && !hinted && !inv.cleanOpts.transcript && looksLikeTranscript(doc.text)) {
-      writeErr(dim(TRANSCRIPT_HINT));
-      hinted = true;
-    }
-    try {
-      const { text, stats } = cleanWithStats(doc.text, inv.cleanOpts);
-      results.push({ doc, text, stats, sourceBytes: onDiskSize(doc.source) });
-    } catch (e) {
-      writeErr(`slimdoc: ${doc.source}: ${messageOf(e)}`);
-      failed = true;
-    }
-  }
+  const cleaned = cleanEach(inv, docs);
+  const results = cleaned.results;
+  if (cleaned.failed) failed = true;
 
   if (results.length > 0) {
     try {
