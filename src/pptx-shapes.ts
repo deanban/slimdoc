@@ -166,18 +166,20 @@ function tableGrid(table: XmlNode): TableResult {
     rows.push(row);
   }
 
-  const table_ = renderTable(rows);
-  return { text: table_ ?? rows.map((row) => row.join(' ').trim()).join('\n'), merged };
+  const rendered = renderTable(rows);
+  return { text: rendered ?? rows.map((row) => row.join(' ').trim()).join('\n'), merged };
 }
 
 // --------------------------------------------------------------------------
 // the walk
 // --------------------------------------------------------------------------
 
+const TITLE_RANK = 0;
+
 /** Placeholder roles, in the order a slide is read rather than painted. */
 const PLACEHOLDER_RANK: Readonly<Record<string, number>> = {
-  ctrTitle: 0,
-  title: 0,
+  ctrTitle: TITLE_RANK,
+  title: TITLE_RANK,
   subTitle: 1,
   body: 1,
 };
@@ -207,6 +209,8 @@ export interface ShapeOutput {
   images: number;
   captionedImages: number;
   mergedCells: number;
+  /** The title placeholder's text, when the slide has one. */
+  title?: string;
   /** Charts recognised but out of scope, with the reason for each. */
   skippedCharts: string[];
 }
@@ -327,7 +331,14 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
     blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [],
   };
 
-  for (const { node } of candidates) {
+  for (const { node, rank } of candidates) {
+    if (rank === TITLE_RANK && node.local === 'sp' && out.title === undefined) {
+      // The label a section carries has to come from the title placeholder
+      // itself: taking the first block instead would caption a slide that opens
+      // with a photograph as `[image: …]`.
+      const heading = bodyText(node).split('\n')[0]?.trim();
+      if (heading) out.title = heading;
+    }
     if (node.local === 'pic') {
       out.images += 1;
       const alt = altOf(node);

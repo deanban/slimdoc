@@ -87,12 +87,6 @@ function placeholderTypes(entries: Entries, slidePart: string): Map<string, stri
   return types;
 }
 
-/** The first line of the leading block, which is the title placeholder's text. */
-function titleOf(blocks: string[]): string | undefined {
-  const first = blocks[0]?.split('\n')[0]?.trim();
-  return first === undefined || first === '' ? undefined : first;
-}
-
 function addTotals(into: ShapeOutput, one: ShapeOutput): void {
   into.images += one.images;
   into.captionedImages += one.captionedImages;
@@ -163,8 +157,11 @@ export function extractPptx(
     // Shapes are separated by a blank line: `canJoin` refuses to join across
     // one, which is what stops `unwrap` gluing two independent text boxes.
     const text = output.blocks.join('\n\n');
-    const label = titleOf(output.blocks);
-    sections.push({ index: page, ...(label === undefined ? {} : { label }), text });
+    sections.push({
+      index: page,
+      ...(output.title === undefined ? {} : { label: output.title }),
+      text,
+    });
   }
 
   return {

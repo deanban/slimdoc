@@ -9,7 +9,7 @@
  */
 
 import { clean } from './clean.js';
-import { computeStats } from './tokens.js';
+import { computeStats, estimateTokens } from './tokens.js';
 import { resolveExtractOptions } from './types.js';
 import type {
   CleanOptions,
@@ -93,7 +93,7 @@ export function cleanDocument(
       index: section.index,
       ...(section.label === undefined ? {} : { label: section.label }),
       chars: text.length,
-      tokens: computeStats('', text).tokens.after,
+      tokens: estimateTokens(text),
     });
   }
 
