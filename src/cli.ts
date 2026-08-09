@@ -49,6 +49,8 @@ Documents
       --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
       --section-headings  emit \`## Page 3\` / \`## Slide 3 — Title\` markers
       --hidden            include hidden slides and off-slide text
+      --chart-data        emit PPTX chart series as tables
+      --no-diagram-text   skip SmartArt text
       --dehyphenate       rejoin words split across PDF line breaks
       --no-tables         do not preserve aligned PDF regions as code blocks
       --no-running-headers  keep text repeated on every PDF page

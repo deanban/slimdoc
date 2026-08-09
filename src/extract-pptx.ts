@@ -97,6 +97,7 @@ function addTotals(into: ShapeOutput, one: ShapeOutput): void {
   into.images += one.images;
   into.captionedImages += one.captionedImages;
   into.mergedCells += one.mergedCells;
+  into.skippedCharts.push(...one.skippedCharts);
 }
 
 function warningsFor(totals: ShapeOutput, hidden: number, dropped: number): string[] {
@@ -106,6 +107,9 @@ function warningsFor(totals: ShapeOutput, hidden: number, dropped: number): stri
     warnings.push(`dropped ${totals.images} embedded image${totals.images === 1 ? '' : 's'}${kept}`);
   }
   if (totals.mergedCells > 0) warnings.push(`${totals.mergedCells} merged cells flattened`);
+  for (const reason of new Set(totals.skippedCharts)) {
+    warnings.push(`skipped a chart because ${reason}`);
+  }
   if (hidden > 0) {
     warnings.push(`skipped ${hidden} hidden slide${hidden === 1 ? '' : 's'} — use --hidden to include them`);
   }
@@ -131,17 +135,26 @@ export function extractPptx(
   const selection = selectPages(included.length, opts.pages, opts.limits.maxPages);
 
   const slide = slideSize(presentation);
-  const totals: ShapeOutput = { blocks: [], images: 0, captionedImages: 0, mergedCells: 0 };
+  const totals: ShapeOutput = {
+    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [],
+  };
   const sections: Section[] = [];
 
   for (const page of selection.pages) {
     const ref = included[page - 1];
     if (!ref) continue;
 
+    const rels = relsOf(entries, ref.part);
     const ctx: SlideContext = {
       slide,
       placeholderTypes: placeholderTypes(entries, ref.part),
       hiddenContent: opts.hiddenContent,
+      chartData: opts.chartData,
+      diagramText: opts.diagramText,
+      part: (id) => {
+        const rel = rels.get(id);
+        return rel && !rel.external ? partOf(entries, resolvePart(ref.part, rel.target)) : undefined;
+      },
     };
     const tree = child(child(ref.root, 'p', 'cSld') ?? ref.root, 'p', 'spTree');
     const output = tree ? serialiseSpTree(tree, ctx) : { ...totals, blocks: [] };

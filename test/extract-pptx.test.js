@@ -15,6 +15,8 @@ import test from 'node:test';
 
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
+import { chartTable } from '../dist/pptx-charts.js';
+import { parseXml } from '../dist/ooxml.js';
 
 const DECK = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'corpus', 'kitchen-sink.pptx');
 
@@ -247,6 +249,93 @@ test('pptx: a table is separated from its neighbours by a blank line, at every p
       }
     });
   }
+});
+
+// --------------------------------------------------------------------------
+// charts
+// --------------------------------------------------------------------------
+
+/**
+ * The series cache is the only place these numbers exist in the package — the
+ * chart is drawn from it, and nothing else in the deck repeats them. It is also
+ * opt-in: a full series can dwarf the ten tokens of text on the slide it sits on.
+ */
+test('pptx: chart data is absent by default and appears with --chart-data', async () => {
+  const plain = await read();
+  assert.doesNotMatch(plain.text, /Impulse reserve/);
+  assert.doesNotMatch(plain.text, /0\.75/);
+
+  const { text } = await read({ chartData: true });
+  assert.match(text, /Propulsion output by quarter/);
+  assert.match(text, /\| Warp core output \(TD\) \| Impulse reserve \(TD\) \|/);
+  assert.match(text, /\| Q3 2369 \| 1\.9 \| 0\.9 \|/);
+});
+
+test('pptx: a chart lands on the slide it belongs to', async () => {
+  const { doc } = await read({ chartData: true });
+  const slide = doc.sections.find((s) => s.label === 'Propulsion output');
+
+  assert.match(slide.text, /Impulse reserve/);
+});
+
+/**
+ * Scatter and bubble charts store their data as x/y pairs, and a multi-level
+ * category axis nests. Reading either through the category/value path would
+ * produce a table whose numbers mean something other than what it says, so they
+ * are skipped and reported instead.
+ */
+test('pptx: a chart shape slimdoc does not understand is skipped, not misread', () => {
+  const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+  const scatter = parseXml(
+    `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:scatterChart><c:ser>` +
+      '<c:xVal><c:numRef><c:numCache><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:xVal>' +
+      '<c:yVal><c:numRef><c:numCache><c:pt idx="0"><c:v>2</c:v></c:pt></c:numCache></c:numRef></c:yVal>' +
+      '</c:ser></c:scatterChart></c:plotArea></c:chart></c:chartSpace>',
+  );
+
+  const { text, skipped } = chartTable(scatter);
+  assert.equal(text, '');
+  assert.match(skipped, /scatter, bubble/);
+});
+
+// --------------------------------------------------------------------------
+// SmartArt
+// --------------------------------------------------------------------------
+
+/**
+ * Diagram text lives in `diagrams/data1.xml`, outside any `<p:sp>`, so a shape
+ * walker finds an empty frame. It is on by default because it is visible text
+ * that is otherwise lost entirely.
+ */
+test('pptx: SmartArt text is extracted by default', async () => {
+  const { doc, text } = await read();
+  const slide = doc.sections.find((s) => s.label === 'Refit sequence');
+
+  assert.match(text, /^- Intake survey$/m);
+  assert.match(text, /^- Structural teardown$/m);
+  assert.match(text, /^- Shakedown cruise$/m);
+  assert.match(slide.text, /Warp core recertification/);
+});
+
+test('pptx: SmartArt keeps the order the diagram declares', async () => {
+  const { doc } = await read();
+  const slide = doc.sections.find((s) => s.label === 'Refit sequence');
+  const order = ['Intake survey', 'Structural teardown', 'Warp core recertification', 'Shakedown cruise'];
+
+  const positions = order.map((step) => slide.text.indexOf(step));
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  assert.ok(positions.every((p) => p >= 0));
+});
+
+test('pptx: --no-diagram-text drops it', async () => {
+  const { text } = await read({ diagramText: false });
+  assert.doesNotMatch(text, /Intake survey/);
+});
+
+/** Layout scaffolding, not content: a presentation point carries no meaning. */
+test('pptx: presentation-only diagram points are skipped', async () => {
+  const { text } = await read();
+  assert.doesNotMatch(text, /\[Text\]/);
 });
 
 // --------------------------------------------------------------------------

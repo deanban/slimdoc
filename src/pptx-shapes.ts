@@ -9,6 +9,8 @@
 
 import { child, children, descendants, type XmlNode } from './ooxml.js';
 import { meaningfulAlt } from './extract-html.js';
+import { chartTable } from './pptx-charts.js';
+import { diagramList } from './pptx-diagrams.js';
 import { renderTable } from './utils/markdown-table.js';
 
 /** English Metric Units: a shape's coordinates are in these. */
@@ -194,6 +196,10 @@ export interface SlideContext {
   /** Placeholder `idx` -> type, resolved from the slide layout. */
   placeholderTypes: Map<string, string>;
   hiddenContent: boolean;
+  chartData: boolean;
+  diagramText: boolean;
+  /** A relationship id on this slide, resolved to its parsed part. */
+  part(relationshipId: string): XmlNode | undefined;
 }
 
 export interface ShapeOutput {
@@ -201,6 +207,8 @@ export interface ShapeOutput {
   images: number;
   captionedImages: number;
   mergedCells: number;
+  /** Charts recognised but out of scope, with the reason for each. */
+  skippedCharts: string[];
 }
 
 const NON_VISUAL = ['nvSpPr', 'nvPicPr', 'nvGraphicFramePr'];
@@ -273,6 +281,38 @@ function tableOf(frame: XmlNode): XmlNode | undefined {
   return descendants(frame, 'a', 'tbl')[0];
 }
 
+/**
+ * A graphic frame holds a table, a chart or a diagram. Only the table lives
+ * inside the frame; the other two are relationships to parts elsewhere in the
+ * package, which is why a walker that reads only the shape tree finds a diagram
+ * slide empty.
+ */
+function serialiseFrame(frame: XmlNode, ctx: SlideContext, out: ShapeOutput): void {
+  const table = tableOf(frame);
+  if (table) {
+    const { text, merged } = tableGrid(table);
+    out.mergedCells += merged;
+    if (text.trim() !== '') out.blocks.push(text);
+    return;
+  }
+
+  const chart = ctx.chartData ? descendants(frame, 'c', 'chart')[0] : undefined;
+  const chartPart = chart && ctx.part(chart.attrs['r:id'] ?? '');
+  if (chartPart) {
+    const { text, skipped } = chartTable(chartPart);
+    if (skipped !== undefined) out.skippedCharts.push(skipped);
+    if (text !== '') out.blocks.push(text);
+    return;
+  }
+
+  const diagram = ctx.diagramText ? descendants(frame, 'dgm', 'relIds')[0] : undefined;
+  const model = diagram && ctx.part(diagram.attrs['r:dm'] ?? '');
+  if (model) {
+    const list = diagramList(model);
+    if (list !== '') out.blocks.push(list);
+  }
+}
+
 function altOf(shape: XmlNode): string | null {
   const name = descendants(shape, 'p', 'cNvPr')[0];
   return meaningfulAlt(name?.attrs['descr'] ?? name?.attrs['title']);
@@ -283,7 +323,9 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
   collect(tree, IDENTITY, ctx, candidates);
   candidates.sort(compare);
 
-  const out: ShapeOutput = { blocks: [], images: 0, captionedImages: 0, mergedCells: 0 };
+  const out: ShapeOutput = {
+    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [],
+  };
 
   for (const { node } of candidates) {
     if (node.local === 'pic') {
@@ -296,11 +338,7 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
       continue;
     }
     if (node.local === 'graphicFrame') {
-      const table = tableOf(node);
-      if (!table) continue;
-      const { text, merged } = tableGrid(table);
-      out.mergedCells += merged;
-      if (text.trim() !== '') out.blocks.push(text);
+      serialiseFrame(node, ctx, out);
       continue;
     }
     const text = bodyText(node);

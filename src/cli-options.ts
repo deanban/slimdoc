@@ -52,6 +52,8 @@ const EXTRACT_FLAGS: Record<string, BooleanExtractKey> = {
   dehyphenate: 'dehyphenate',
   'running-headers': 'dropRunningHeaders',
   tables: 'preserveTables',
+  'chart-data': 'chartData',
+  'diagram-text': 'diagramText',
 };
 
 /** Boolean CLI switches whose long name is also their field name. */
