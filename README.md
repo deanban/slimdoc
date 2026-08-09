@@ -83,6 +83,14 @@ pointless backslash escapes that Word conversion leaves behind.
 
 **Code blocks are never touched**, in any mode — whitespace carries meaning there.
 
+**Tables keep their shape.** A table in a `.docx`, `.html` or `.rtf` source comes out as
+a GitHub-flavoured Markdown table — leading and trailing pipes, a separator row, one row
+per line — rather than as a column of orphaned cells. Merged cells have no Markdown
+equivalent, so they are flattened by repeating the value across the span, and the run
+reports `N merged cells flattened` on stderr so you know the association was
+approximated. Tables keep the blank line that terminates them in every mode, including
+`--aggressive`.
+
 ### Presets
 
 | | `--safe` | `--balanced` (default) | `--aggressive` |
