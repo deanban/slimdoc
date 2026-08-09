@@ -124,12 +124,14 @@ test('detectFormat: rtf, html and markdown', async () => {
 });
 
 test('SUPPORTED_EXTENSIONS covers every documented input', () => {
-  for (const ext of ['.docx', '.md', '.markdown', '.mdx', '.txt', '.csv',
-    '.json', '.yaml', '.yml', '.html', '.htm', '.rtf']) {
+  for (const ext of ['.docx', '.pptx', '.pptm', '.potx', '.pdf', '.md', '.markdown',
+    '.mdx', '.txt', '.csv', '.json', '.yaml', '.yml', '.html', '.htm', '.rtf']) {
     assert.ok(SUPPORTED_EXTENSIONS.includes(ext), `${ext} should be supported`);
   }
-  assert.ok(!SUPPORTED_EXTENSIONS.includes('.pdf'));
-  assert.ok(!SUPPORTED_EXTENSIONS.includes('.doc'));
+  // The legacy binary containers stay out: they are named refusals, not inputs.
+  for (const ext of ['.doc', '.ppt', '.xls', '.xlsx', '.key', '.odp']) {
+    assert.ok(!SUPPORTED_EXTENSIONS.includes(ext), `${ext} should not be supported`);
+  }
 });
 
 // --------------------------------------------------------------------------
@@ -365,32 +367,25 @@ test('unsupported: legacy .doc throws with a conversion hint', async () => {
   );
 });
 
-test('unsupported: pdf throws with a pdftotext hint', async () => {
+/**
+ * A PDF whose objects are truncated is not a slimdoc refusal any more — the
+ * engine reads what it can. What must not happen is a crash or mojibake.
+ */
+test('pdf: a malformed pdf is reported rather than emitted as junk', async () => {
   const pdf = Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n', 'latin1');
-  await assert.rejects(
-    () => extractFromBuffer(pdf, { filename: 'paper.pdf' }),
-    (err) => {
-      assert.ok(err instanceof UnsupportedFormatError);
-      assert.equal(err.format, 'pdf');
-      assert.match(err.message, /pdftotext paper\.pdf - \| slimdoc/);
-      return true;
-    },
-  );
+  await assert.rejects(() => extractFromBuffer(pdf, { filename: 'paper.pdf' }));
 });
 
 /**
  * The header is only *usually* at byte zero — the specification allows leading
  * junk before `%PDF`, and mail gateways and scanners produce exactly that.
  */
-test('unsupported: a pdf with leading junk is still recognised as a pdf', async () => {
+test('detection: a pdf with leading junk is still recognised as a pdf', () => {
   const pdf = Buffer.concat([
     Buffer.alloc(200, 0x20),
     Buffer.from('%PDF-1.7\n1 0 obj\n', 'latin1'),
   ]);
-  await assert.rejects(
-    () => extractFromBuffer(pdf, { filename: 'scan.pdf' }),
-    (err) => err instanceof UnsupportedFormatError && err.format === 'pdf',
-  );
+  assert.equal(detectFormat(pdf, 'scan.pdf'), 'pdf');
 });
 
 test('unsupported: junk far past the header does not make a text file a pdf', async () => {

@@ -15,6 +15,7 @@ export { UnsupportedFormatError };
 export const SUPPORTED_EXTENSIONS: readonly string[] = [
   '.docx',
   '.pptx', '.pptm', '.potx',
+  '.pdf',
   '.md', '.markdown', '.mdx',
   '.txt', '.text', '.log',
   '.csv', '.tsv',
@@ -108,6 +109,7 @@ export function detectFormat(buf: Buffer, filename?: string): SourceFormat {
 
   if (looksLikeDocx(buf)) return 'docx';
   if (looksLikePptx(buf)) return 'pptx';
+  if (looksLikePdf(buf)) return 'pdf';
   // Trust a .docx extension only if the bytes are at least a zip: a .doc file
   // misnamed .docx should reach the "re-save as .docx" error, not mammoth.
   if (ext === '.docx' && startsWith(buf, ZIP_MAGIC)) return 'docx';
@@ -229,12 +231,6 @@ function rejectKnownBinary(buf: Buffer, source: string): void {
       if (buf.includes(marker, 0, 'latin1')) throw new UnsupportedFormatError(message, format);
     }
   }
-  if (looksLikePdf(buf)) {
-    throw new UnsupportedFormatError(
-      `PDF is not supported — run: pdftotext ${source} - | slimdoc`,
-      'pdf',
-    );
-  }
 }
 
 // --------------------------------------------------------------------------
@@ -317,6 +313,10 @@ export async function extractFromBuffer(
     // entry point, and cold start is most of what it feels like.
     const { extractPptx } = await import('./extract-pptx.js');
     return extractPptx(buf, source, extract);
+  }
+  if (format === 'pdf') {
+    const { extractPdf } = await import('./extract-pdf.js');
+    return extractPdf(buf, source, extract);
   }
 
   rejectKnownBinary(buf, source);

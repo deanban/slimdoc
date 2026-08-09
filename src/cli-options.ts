@@ -49,6 +49,8 @@ type BooleanExtractKey = {
 const EXTRACT_FLAGS: Record<string, BooleanExtractKey> = {
   hidden: 'hiddenContent',
   'section-headings': 'sectionHeadings',
+  dehyphenate: 'dehyphenate',
+  'running-headers': 'dropRunningHeaders',
 };
 
 /** Boolean CLI switches whose long name is also their field name. */

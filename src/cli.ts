@@ -49,6 +49,8 @@ Documents
       --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
       --section-headings  emit \`## Page 3\` / \`## Slide 3 — Title\` markers
       --hidden            include hidden slides and off-slide text
+      --dehyphenate       rejoin words split across PDF line breaks
+      --no-running-headers  keep text repeated on every PDF page
       --max-pages <n>     cap on the pages actually read (default 500)
 Other
   -s, --stats             print a before/after report to stderr

@@ -54,7 +54,8 @@
   },
   "dependencies": {
     "mammoth": "^1.12.0",
-    "saxes": "^6.0.0"
+    "saxes": "^6.0.0",
+    "unpdf": "^1.8.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
