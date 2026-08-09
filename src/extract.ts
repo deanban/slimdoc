@@ -45,7 +45,7 @@ interface MammothImage {
   altText?: string;
 }
 interface MammothApi {
-  convertToMarkdown(
+  convertToHtml(
     input: { buffer: Buffer },
     options: { convertImage: unknown; ignoreEmptyParagraphs?: boolean },
   ): Promise<MammothResult>;
@@ -114,8 +114,13 @@ function decodeLossy(buf: Buffer): string {
   return buf.toString('utf8');
 }
 
-/** Decode as UTF-8 or UTF-16, dropping a leading BOM. Throws on binary input. */
-function decodeTextStrict(buf: Buffer, label: string): string {
+/**
+ * Decode as UTF-8 or UTF-16, dropping a leading BOM. Throws on binary input.
+ *
+ * The messages name no source: every caller of these errors already prefixes one
+ * (`slimdoc: <file>: ...`), which is why the `rejectKnownBinary` refusals omit it too.
+ */
+function decodeTextStrict(buf: Buffer): string {
   if (startsWith(buf, [0xff, 0xfe])) {
     return buf.subarray(2).toString('utf16le');
   }
@@ -131,14 +136,14 @@ function decodeTextStrict(buf: Buffer, label: string): string {
     text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
   } catch {
     throw new UnsupportedFormatError(
-      `${label}: not valid UTF-8 text — it looks like a binary file. ` +
+      'not valid UTF-8 text — it looks like a binary file. ' +
         'Convert it to .docx, .html, .rtf or plain text first.',
       'binary',
     );
   }
   if (text.includes('\u0000')) {
     throw new UnsupportedFormatError(
-      `${label}: contains NUL bytes — it looks like a binary file.`,
+      'contains NUL bytes — it looks like a binary file.',
       'binary',
     );
   }
@@ -166,9 +171,6 @@ function rejectKnownBinary(buf: Buffer, source: string): void {
 // docx
 // --------------------------------------------------------------------------
 
-/** `![alt]()` is what mammoth's markdown writer emits for a src-less image. */
-const EMPTY_IMAGE = /!\[([^\]\n]*)\]\(\)/g;
-
 async function extractDocx(buf: Buffer, source: string): Promise<ExtractedDoc> {
   let images = 0;
   let captioned = 0;
@@ -184,11 +186,12 @@ async function extractDocx(buf: Buffer, source: string): Promise<ExtractedDoc> {
     return { src: '', alt: alt ?? '' };
   });
 
-  const result = await mammothApi.convertToMarkdown({ buffer: buf }, { convertImage });
-
-  const text = result.value.replace(EMPTY_IMAGE, (_m: string, alt: string) =>
-    alt.trim() ? `[image: ${alt.trim()}]` : '',
-  );
+  // HTML, not Markdown: mammoth's Markdown writer has no table support at all,
+  // so a table arrives as one orphan paragraph per cell. Its HTML writer emits
+  // real `<table><tr><td>`, which the shared emitter turns into GFM — one table
+  // implementation for docx and HTML instead of two.
+  const result = await mammothApi.convertToHtml({ buffer: buf }, { convertImage });
+  const { text, mergedCells } = htmlToText(result.value);
 
   const warnings = result.messages
     .filter((m) => m.type !== 'info')
@@ -197,8 +200,14 @@ async function extractDocx(buf: Buffer, source: string): Promise<ExtractedDoc> {
     const kept = captioned > 0 ? `, ${captioned} kept as [image: ...] captions` : '';
     warnings.push(`dropped ${images} embedded image${images === 1 ? '' : 's'}${kept}`);
   }
+  addMergedCellWarning(warnings, mergedCells);
 
   return { text: normaliseNewlines(text), format: 'docx', source, warnings };
+}
+
+/** Markdown has no rowspan or colspan, so the association was approximated. */
+function addMergedCellWarning(warnings: string[], mergedCells: number): void {
+  if (mergedCells > 0) warnings.push(`${mergedCells} merged cells flattened`);
 }
 
 function normaliseNewlines(text: string): string {
@@ -219,14 +228,15 @@ export async function extractFromBuffer(
   if (format === 'docx') return extractDocx(buf, source);
 
   rejectKnownBinary(buf, source);
-  const raw = decodeTextStrict(buf, source);
+  const raw = decodeTextStrict(buf);
 
   if (format === 'html') {
-    const { text, droppedImages } = htmlToText(raw);
+    const { text, droppedImages, mergedCells } = htmlToText(raw);
     const warnings: string[] = [];
     if (droppedImages > 0) {
       warnings.push(`dropped ${droppedImages} image${droppedImages === 1 ? '' : 's'}`);
     }
+    addMergedCellWarning(warnings, mergedCells);
     return { text, format: 'html', source, warnings };
   }
 

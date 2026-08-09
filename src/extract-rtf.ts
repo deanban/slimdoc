@@ -6,6 +6,8 @@
  * those destination groups is the whole point; faithful formatting is not.
  */
 
+import { renderTable } from './utils/markdown-table.js';
+
 /** Destination groups whose contents are metadata or binary, never prose. */
 const SKIP_DESTINATIONS = new Set([
   'fonttbl', 'colortbl', 'stylesheet', 'listtable', 'listoverridetable',
@@ -17,6 +19,35 @@ const SKIP_DESTINATIONS = new Set([
   'bkmkend', 'shppict', 'nonshppict', 'fldinst', 'panose', 'falt',
 ]);
 
+/**
+ * Marks a `\cell` boundary until the table pass runs.
+ *
+ * A tab cannot do this job: `tabsToSpaces` and `collapseSpaces` in clean.ts
+ * turn a tab-separated row into indistinguishable prose, which is exactly how
+ * RTF tables used to be destroyed after extraction had done its part.
+ */
+const CELL_MARK = '\u001f';
+
+/**
+ * Marks a row boundary: `\row`, `\trowd`, or a paragraph break outside a table.
+ *
+ * A newline cannot do this job either. Word writes a multi-paragraph table cell
+ * as `\intbl ...\par ...\cell`, so splitting rows on newlines tore the first
+ * line of such a cell out of the table and left it stranded as prose above it.
+ */
+const ROW_MARK = '\u001e';
+
+/**
+ * Both sentinels, wherever they came from. A document may legitimately contain
+ * U+001F (as `\u31`, `\'1f`, or a raw byte); left alone it fabricates a table
+ * out of ordinary prose, so document text is scrubbed of both marks and only
+ * the ones this scanner emits itself reach the table pass.
+ */
+const SENTINELS = new RegExp(`[${ROW_MARK}${CELL_MARK}]`, 'g');
+
+/** Breaks that end a paragraph, and so end a table row when outside a table. */
+const PARAGRAPH_BREAKS = new Set(['par', 'sect', 'page']);
+
 /** Control words that emit whitespace rather than formatting. */
 const BREAKS: Readonly<Record<string, string>> = {
   par: '\n',
@@ -24,10 +55,10 @@ const BREAKS: Readonly<Record<string, string>> = {
   sect: '\n\n',
   page: '\n\n',
   softline: '\n',
-  row: '\n',
-  cell: '\t',
-  nestcell: '\t',
-  nestrow: '\n',
+  row: ROW_MARK,
+  cell: CELL_MARK,
+  nestcell: CELL_MARK,
+  nestrow: ROW_MARK,
   tab: '\t',
   emdash: '—',
   endash: '–',
@@ -45,6 +76,73 @@ const BREAKS: Readonly<Record<string, string>> = {
   zwj: '',
   zwnj: '',
 };
+
+interface Block {
+  text: string;
+  /** Rendered as Markdown pipe rows, so it needs a blank line on either side. */
+  table: boolean;
+}
+
+/** One cell on one line, matching what `escapeCell` does inside a real table. */
+function flattenCell(cell: string): string {
+  return cell.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Turn each run of cell-marked rows into a Markdown table.
+ *
+ * Rows are delimited by `ROW_MARK`, never by newlines: a `\line` or a `\par`
+ * inside a cell is cell content, and the emitter collapses it to a space.
+ *
+ * RTF has no table header concept, so the first row of a run is treated as one
+ * — the same best-effort call the HTML path makes for a `<table>` whose first
+ * row happens to use `<th>`.
+ */
+function renderCellRuns(text: string): string {
+  const blocks: Block[] = [];
+  let run: string[][] = [];
+
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const table = renderTable(run);
+    blocks.push(
+      table !== null
+        ? { text: table, table: true }
+        : { text: run.map((cells) => cells.map(flattenCell).join(' ')).join('\n'), table: false },
+    );
+    run = [];
+  };
+
+  for (const segment of text.split(ROW_MARK)) {
+    if (segment.includes(CELL_MARK)) {
+      // A trailing `\cell` before `\row` leaves an empty final field.
+      const cells = segment.split(CELL_MARK);
+      if (cells.at(-1)?.trim() === '') cells.pop();
+      run.push(cells);
+      continue;
+    }
+    // `\trowd` marks a row boundary too, so a run's rows are separated by an
+    // empty segment that carries no content and must not break the run.
+    if (segment.trim() === '') {
+      if (run.length === 0) blocks.push({ text: '', table: false });
+      continue;
+    }
+    flush();
+    blocks.push({ text: segment, table: false });
+  }
+  flush();
+
+  // A GFM table body runs until a blank line, so prose that follows a table
+  // without one is read as another row of it — the same reason the HTML path
+  // puts a blank line between a `<table>` and the `<p>` after it.
+  return blocks
+    .map((block, i) => {
+      const previous = blocks[i - 1];
+      if (previous === undefined) return block.text;
+      return (block.table || previous.table ? '\n\n' : '\n') + block.text;
+    })
+    .join('');
+}
 
 /** cp1252 mappings for 0x80-0x9F; the rest of the range is latin-1. */
 const CP1252_HIGH = [
@@ -87,9 +185,19 @@ export function rtfToText(rtf: string): RtfExtraction {
   let pendingIgnorable = false;
   /** Unicode replacement chars still to swallow after a `\uN`. */
   let swallow = 0;
+  /** Inside a table row: set by `\trowd`/`\intbl`/`\cell`, cleared by `\row`. */
+  let inTable = false;
 
+  /** A mark this scanner produced; never document content. */
   const emit = (s: string): void => {
     if (!state.skip) out.push(s);
+  };
+
+  /** Document content, which may not carry a sentinel of its own. */
+  const emitText = (s: string): void => {
+    if (state.skip) return;
+    const scrubbed = s.replace(SENTINELS, '');
+    if (scrubbed !== '') out.push(scrubbed);
   };
 
   const n = rtf.length;
@@ -120,7 +228,7 @@ export function rtfToText(rtf: string): RtfExtraction {
       if (swallow > 0) {
         swallow -= 1;
       } else {
-        emit(ch);
+        emitText(ch);
       }
       i += 1;
       continue;
@@ -132,7 +240,7 @@ export function rtfToText(rtf: string): RtfExtraction {
 
     if (next === '\\' || next === '{' || next === '}') {
       if (swallow > 0) swallow -= 1;
-      else emit(next);
+      else emitText(next);
       i += 2;
       continue;
     }
@@ -151,7 +259,7 @@ export function rtfToText(rtf: string): RtfExtraction {
       i += 4;
       if (/^[0-9a-fA-F]{2}$/.test(hex)) {
         if (swallow > 0) swallow -= 1;
-        else emit(cp1252(parseInt(hex, 16)));
+        else emitText(cp1252(parseInt(hex, 16)));
       }
       continue;
     }
@@ -198,13 +306,27 @@ export function rtfToText(rtf: string): RtfExtraction {
     if (word === 'u' && numText !== '') {
       let code = Number(numText);
       if (code < 0) code += 65536;
-      if (!state.skip) out.push(String.fromCharCode(code));
+      emitText(String.fromCharCode(code));
       swallow = state.uc;
+      continue;
+    }
+    if (word === 'trowd' || word === 'intbl' || word === 'nesttableprops') {
+      // `\trowd` opens a row definition, so whatever precedes it is not part of
+      // the first cell. `\intbl` recurs once per paragraph inside the row and so
+      // marks the context without closing anything.
+      if (word === 'trowd') emit(ROW_MARK);
+      inTable = true;
       continue;
     }
     const brk = BREAKS[word];
     if (brk !== undefined) {
-      emit(brk);
+      if (brk === CELL_MARK) inTable = true;
+      else if (brk === ROW_MARK) inTable = false;
+      // Outside a table a paragraph break also ends any row being gathered;
+      // inside one it is cell content, which is what a multi-paragraph cell is
+      // made of.
+      const paragraph = !inTable && PARAGRAPH_BREAKS.has(word);
+      emit(paragraph ? `${brk.slice(0, -1)}${ROW_MARK}` : brk);
       swallow = 0;
       continue;
     }
@@ -213,6 +335,7 @@ export function rtfToText(rtf: string): RtfExtraction {
 
   let text = out.join('');
   text = text.replace(/\r\n?/g, '\n');
+  text = renderCellRuns(text);
   text = text.replace(/[ \t]+\n/g, '\n');
   text = text.replace(/\n{3,}/g, '\n\n');
   return { text: text.trim(), droppedPictures };

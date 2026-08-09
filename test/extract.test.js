@@ -143,7 +143,8 @@ test('html: entities, tags, media and code blocks', async () => {
   // &nbsp; decodes to U+00A0 and stays one — folding it is clean.ts's job.
   assert.match(doc.text, /^# Quarterly\u00a0Review$/m);
   assert.match(doc.text, /^## Highlights$/m);
-  assert.match(doc.text, /^- Revenue up 12% year on year$/m);
+  // <strong>/<em> now survive as Markdown emphasis; --aggressive strips them.
+  assert.match(doc.text, /^- Revenue up \*\*12%\*\* year on year$/m);
   assert.match(doc.text, /^- Churn down to 1\.8%$/m);
 
   // Entities: named, numeric decimal, numeric hex, and a double-encode guard.
@@ -184,10 +185,14 @@ test('html: entities, tags, media and code blocks', async () => {
   assert.ok(!/<[a-z]/i.test(doc.text.replace(/<dana@example\.com>/, '')), 'no tags left');
 });
 
-test('html: table rows keep their cell boundaries', async () => {
+test('html: tables are emitted as GitHub-flavoured Markdown', async () => {
   const doc = await extractFromFile(fixture('sample.html'));
-  assert.match(doc.text, /^Quarter \| Revenue \| Notes$/m);
-  assert.match(doc.text, /^Q1 \| 1\.2M \| flat$/m);
+
+  // The edge bars are what make isTableRow recognise these, which is in turn
+  // what stops clean.ts from unwrapping the rows into prose.
+  assert.match(doc.text, /^\| Quarter \| Revenue \| Notes \|$/m);
+  assert.match(doc.text, /^\| --- \| --- \| --- \|$/m);
+  assert.match(doc.text, /^\| Q1 \| 1\.2M \| flat \|$/m);
 });
 
 // --------------------------------------------------------------------------
@@ -231,6 +236,67 @@ test('rtf: escapes, breaks and dropped destination groups', async () => {
 
   assert.ok(doc.warnings.some((w) => /approximate/i.test(w)));
   assert.ok(doc.warnings.some((w) => /dropped 1 embedded picture/.test(w)));
+});
+
+/** Extract a literal RTF string through the same path a .rtf file takes. */
+const fromRtf = async (rtf) =>
+  (await extractFromBuffer(Buffer.from(rtf), { filename: 'snippet.rtf' })).text;
+
+test('rtf: a break inside a cell stays inside the cell', async () => {
+  // Word writes a multi-paragraph cell as `\intbl ...\par ...\cell`. Rows used
+  // to be split on newlines, which tore everything before the break out of the
+  // table and left it above as prose no reader could place.
+  const text = await fromRtf(String.raw`{\rtf1 a\line b\cell c\cell\row d\cell e\cell\row}`);
+
+  assert.equal(text, '| a b | c |\n| --- | --- |\n| d | e |');
+
+  const paragraphs = await fromRtf(
+    String.raw`{\rtf1\trowd\intbl one\par two\cell B\cell\row\trowd\intbl C\cell D\cell\row}`,
+  );
+  assert.equal(paragraphs, '| one two | B |\n| --- | --- |\n| C | D |');
+});
+
+test('rtf: a blank line separates a table from the prose around it', async () => {
+  // A GFM table body runs until a blank line, so prose that follows one without
+  // a blank line between them is read as another row of the table.
+  const text = await fromRtf(String.raw`{\rtf1 A\cell B\cell\row Prose follows\par}`);
+
+  assert.equal(text, '| A | B |\n| --- | --- |\n\nProse follows');
+
+  const before = await fromRtf(String.raw`{\rtf1 Prose first\par A\cell B\cell\row}`);
+  assert.equal(before, 'Prose first\n\n| A | B |\n| --- | --- |');
+});
+
+test('rtf: a literal cell sentinel in the document cannot fabricate a table', async () => {
+  // U+001F is a legal document character, arriving as \uN, \'hh or a raw byte.
+  // Only the marks the scanner emits itself may mean "cell boundary".
+  assert.equal(await fromRtf(String.raw`{\rtf1 before\u31 x after}`), 'before after');
+  assert.equal(await fromRtf(String.raw`{\rtf1 before\'1f after}`), 'before after');
+  assert.equal(await fromRtf('{\\rtf1 before\u001f after}'), 'before after');
+});
+
+test('rtf: no cell sentinel survives on any path', async () => {
+  const SENTINELS = /[\u001e\u001f]/;
+  const cases = [
+    // A `\cell` inside a destination group that is dropped whole.
+    String.raw`{\rtf1 keep{\*\generator x\cell y\cell\row}tail}`,
+    // A row the document never closes with `\row`.
+    String.raw`{\rtf1 a\cell b\cell}`,
+    // A one-column run, which is not a table and degrades to plain lines.
+    String.raw`{\rtf1 solo\cell\row only\cell\row}`,
+    // A nested table.
+    String.raw`{\rtf1\trowd\intbl A\nestcell B\nestcell\nestrow C\cell\row}`,
+    // Sentinels in the source text, next to real cells.
+    '{\\rtf1 x\u001fy\\cell\u001e z\\cell\\row}',
+  ];
+
+  for (const rtf of cases) {
+    assert.doesNotMatch(await fromRtf(rtf), SENTINELS, `sentinel survived: ${rtf}`);
+  }
+
+  for (const name of ['sample.rtf', 'tables.rtf']) {
+    assert.doesNotMatch((await extractFromFile(fixture(name))).text, SENTINELS, name);
+  }
 });
 
 // --------------------------------------------------------------------------
