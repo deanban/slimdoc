@@ -18,22 +18,13 @@ import {
 } from './clean-markdown.js';
 import { computeStats } from './tokens.js';
 import { tidyTranscript } from './transcript.js';
+import { stripInvisible } from './utils/text.js';
 
 const cp = (code: number): string => String.fromCodePoint(code);
 const charClass = (codes: readonly number[]): string => codes.map(cp).join('');
 
 /** Vertical tab and form feed are line breaks in practice; so are U+2028/U+2029. */
 const LINE_BREAK = new RegExp(`\r\n|\r|[\x0b\x0c${charClass([0x2028, 0x2029])}]`, 'g');
-
-const INVISIBLE = new RegExp(
-  `[${charClass([
-    0x00ad, 0x061c, 0x180e, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
-    0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff,
-  ])}]`,
-  'g',
-);
-/** C0 and C1 controls, keeping only \n and \t. */
-const CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 
 const EMOJI = new RegExp(
   `[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\p{Emoji_Modifier}${charClass([
@@ -81,7 +72,7 @@ export function clean(text: string, options?: Partial<CleanOptions>): string {
 
   let s = stripSentinels(text).replace(LINE_BREAK, '\n');
   if (opts.preserveCode) s = protect(s, store);
-  if (opts.stripInvisible) s = s.replace(INVISIBLE, '').replace(CONTROLS, '');
+  if (opts.stripInvisible) s = stripInvisible(s);
   if (opts.normalizeUnicode) s = s.normalize('NFKC');
   if (opts.asciiPunctuation) s = foldPunctuation(s);
   if (opts.stripEmoji) s = removeEmoji(s);

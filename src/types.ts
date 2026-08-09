@@ -1,3 +1,5 @@
+import type { PageRange } from './utils/ranges.js';
+
 export type Preset = 'safe' | 'balanced' | 'aggressive';
 
 export interface CleanOptions {
@@ -102,6 +104,79 @@ export interface ExtractedDoc {
   /** File path, or `<stdin>` / `<clipboard>`. */
   source: string;
   warnings: string[];
+}
+
+/**
+ * Resource caps. `maxPages` alone is not a guard: it protects neither against a
+ * handful of pathological pages carrying millions of text items, nor against a
+ * small file that inflates enormously.
+ */
+export interface Limits {
+  /** Reject the file outright above this. */
+  maxInputBytes: number;
+  /** Total inflated size across every zip entry actually read. */
+  maxInflatedBytes: number;
+  /** One inflated zip entry. */
+  maxEntryBytes: number;
+  /** Applied to SELECTED pages, not to document length. */
+  maxPages: number;
+  /** PDF text items before the page is abandoned. */
+  maxItemsPerPage: number;
+}
+
+export const DEFAULT_LIMITS: Limits = {
+  maxInputBytes: 100_000_000,
+  maxInflatedBytes: 200_000_000,
+  maxEntryBytes: 50_000_000,
+  maxPages: 500,
+  maxItemsPerPage: 50_000,
+};
+
+/**
+ * Decisions about *reading* a document, as opposed to normalising one.
+ *
+ * Every default derives from one sentence: default output contains visible,
+ * non-duplicated textual content in conservative reading order. Hidden content,
+ * full chart series, page labels and speculative structure are opt-in.
+ */
+export interface ExtractOptions {
+  /** 1-based inclusive ranges. Empty means all. */
+  pages: PageRange[];
+  /** `## Page 3` / `## Slide 3 — Title` markers. */
+  sectionHeadings: boolean;
+  /** PDF: suppress text repeated across most pages. */
+  dropRunningHeaders: boolean;
+  /** PDF: rejoin `inter-\nnational`. */
+  dehyphenate: boolean;
+  /** PDF: keep a gridlike region's alignment in a preformatted block. */
+  preserveTables: boolean;
+  /** PPTX: emit chart `<c:ser>` data as a table. */
+  chartData: boolean;
+  /** PPTX: emit SmartArt text as a nested list. */
+  diagramText: boolean;
+  /** PPTX: include slides marked `show="0"` and off-slide shapes. */
+  hiddenContent: boolean;
+  limits: Limits;
+}
+
+export const EXTRACT_DEFAULTS: ExtractOptions = {
+  pages: [],
+  sectionHeadings: false,   // a slide's title is already in its text; markers duplicate it
+  dropRunningHeaders: true, // removes duplication, squarely within the contract
+  dehyphenate: false,       // opt-in: corrupts real compounds like `state-of-the-art`
+  preserveTables: true,     // preserving alignment asserts no structure, so it is safe
+  chartData: false,         // opt-in: a full series can dwarf a ten-token slide
+  diagramText: true,        // visible text that is otherwise lost entirely
+  hiddenContent: false,     // "visible ... content", per the contract
+  limits: DEFAULT_LIMITS,
+};
+
+export function resolveExtractOptions(options: Partial<ExtractOptions> = {}): ExtractOptions {
+  return {
+    ...EXTRACT_DEFAULTS,
+    ...options,
+    limits: { ...DEFAULT_LIMITS, ...options.limits },
+  };
 }
 
 export interface Stats {

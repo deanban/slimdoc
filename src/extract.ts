@@ -3,19 +3,11 @@ import { extname } from 'node:path';
 import mammoth from 'mammoth';
 
 import type { ExtractedDoc, SourceFormat } from './types.js';
+import { UnsupportedFormatError } from './errors.js';
 import { htmlToText, meaningfulAlt } from './extract-html.js';
 import { rtfToText } from './extract-rtf.js';
 
-/** Thrown for inputs we deliberately refuse; the CLI turns these into messages. */
-export class UnsupportedFormatError extends Error {
-  readonly format: string;
-
-  constructor(message: string, format = 'unknown') {
-    super(message);
-    this.name = 'UnsupportedFormatError';
-    this.format = format;
-  }
-}
+export { UnsupportedFormatError };
 
 export const SUPPORTED_EXTENSIONS: readonly string[] = [
   '.docx',

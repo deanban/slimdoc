@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { fenceDelimiter, fencedBlock } from '../dist/utils/fence.js';
 import { escapeCell, renderTable } from '../dist/utils/markdown-table.js';
+import { parseRanges, selectPages } from '../dist/utils/ranges.js';
+import { sanitizeText, stripInvisible } from '../dist/utils/text.js';
 
 // --------------------------------------------------------------------------
 // fenceDelimiter
@@ -127,4 +129,90 @@ test('table: a single-column grid is not a table', () => {
 test('table: an empty grid is not a table', () => {
   assert.equal(renderTable([]), null);
   assert.equal(renderTable([[]]), null);
+});
+
+// --------------------------------------------------------------------------
+// stripInvisible / sanitizeText
+// --------------------------------------------------------------------------
+
+test('text: zero-width and soft-hyphen characters go, the letters stay', () => {
+  assert.equal(stripInvisible('zero​width'), 'zerowidth');
+  assert.equal(stripInvisible('soft­hyphen'), 'softhyphen');
+  assert.equal(stripInvisible('﻿bom'), 'bom');
+});
+
+test('text: newlines and tabs survive the control strip', () => {
+  assert.equal(stripInvisible('a\nb\tc'), 'a\nb\tc');
+  assert.equal(stripInvisible('bellhere'), 'bellhere');
+});
+
+test('text: sanitize folds ligatures the way NFKC does', () => {
+  assert.equal(sanitizeText('ﬁrst'), 'first');
+  assert.equal(sanitizeText('ﬂag'), 'flag');
+});
+
+test('text: sanitize does both jobs in one pass', () => {
+  assert.equal(sanitizeText('ﬁrst​ line'), 'first line');
+});
+
+/**
+ * The reason this helper exists: fenced content bypasses clean.ts entirely, so
+ * a PDF table preserved as preformatted text would otherwise keep every
+ * ligature and soft hyphen the cleaner exists to remove.
+ */
+test('text: sanitize leaves ordinary prose byte-identical', () => {
+  const prose = 'Ordinary prose, with punctuation - and digits 42.';
+  assert.equal(sanitizeText(prose), prose);
+});
+
+// --------------------------------------------------------------------------
+// parseRanges
+// --------------------------------------------------------------------------
+
+test('ranges: a single page is a range of one', () => {
+  assert.deepEqual(parseRanges('4'), [[4, 4]]);
+});
+
+test('ranges: the spec example parses to two ranges', () => {
+  assert.deepEqual(parseRanges('3-7,12'), [[3, 7], [12, 12]]);
+});
+
+test('ranges: surrounding and interior spaces are tolerated', () => {
+  assert.deepEqual(parseRanges(' 1 - 2 , 5 '), [[1, 2], [5, 5]]);
+});
+
+test('ranges: junk is refused by name rather than silently ignored', () => {
+  for (const bad of ['', 'x', '0', '-3', '3-', '5-2', '1,,2', '1.5']) {
+    assert.throws(() => parseRanges(bad), RangeError, `accepted "${bad}"`);
+  }
+});
+
+// --------------------------------------------------------------------------
+// selectPages
+// --------------------------------------------------------------------------
+
+test('pages: no ranges means every page', () => {
+  assert.deepEqual(selectPages(3, [], 10), { pages: [1, 2, 3], dropped: 0 });
+});
+
+test('pages: ranges are expanded, sorted and deduplicated', () => {
+  assert.deepEqual(selectPages(9, [[5, 6], [1, 2], [2, 2]], 10).pages, [1, 2, 5, 6]);
+});
+
+test('pages: a range running past the end is clamped, not an error', () => {
+  assert.deepEqual(selectPages(3, [[2, 900]], 10).pages, [2, 3]);
+});
+
+test('pages: a selection entirely past the end comes back empty', () => {
+  assert.deepEqual(selectPages(3, [[40, 50]], 10).pages, []);
+});
+
+/**
+ * The cap applies to SELECTED pages, so `--pages 1-3` of a 2,000-page document
+ * reads three pages. `dropped` is what stops the cap from being silent: the
+ * caller warns with it.
+ */
+test('pages: the cap counts selected pages and reports what it dropped', () => {
+  assert.deepEqual(selectPages(2000, [[1, 3]], 5), { pages: [1, 2, 3], dropped: 0 });
+  assert.deepEqual(selectPages(2000, [], 3), { pages: [1, 2, 3], dropped: 1997 });
 });
