@@ -56,7 +56,18 @@ function startsWith(buf: Buffer, bytes: readonly number[]): boolean {
 
 const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04]; // PK\x03\x04
 const OLE2_MAGIC = [0xd0, 0xcf, 0x11, 0xe0]; // legacy .doc/.xls/.ppt
-const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46]; // %PDF
+
+/**
+ * `%PDF` is normally at byte zero, but the specification allows leading bytes
+ * before it and mail gateways and scanners produce them. A kilobyte is the
+ * conventional tolerance: far enough for real junk, too short for a text file
+ * that merely discusses the format to be mistaken for one.
+ */
+const PDF_HEADER_WINDOW = 1024;
+
+function looksLikePdf(buf: Buffer): boolean {
+  return buf.subarray(0, PDF_HEADER_WINDOW).includes('%PDF', 0, 'latin1');
+}
 
 /**
  * A zip that carries a `word/document.xml` entry is a .docx. The entry name is
@@ -142,16 +153,70 @@ function decodeTextStrict(buf: Buffer): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-/** Refuse the two binary formats we can name, with the conversion recipe. */
+/**
+ * Which legacy container this is, read from the compound-file directory rather
+ * than from the extension. `.ppt` renamed to `.doc` is common enough, and being
+ * told to re-save a slide deck as .docx helps nobody.
+ */
+const OLE2_STREAMS: ReadonlyArray<readonly [string, string]> = [
+  ['PowerPoint Document', 'ppt'],
+  ['Workbook', 'xls'],
+  ['Book', 'xls'],
+  ['WordDocument', 'doc'],
+];
+
+function ole2Format(buf: Buffer): string {
+  for (const [stream, format] of OLE2_STREAMS) {
+    // Directory entry names are UTF-16LE inside the compound file.
+    if (buf.includes(Buffer.from(stream, 'utf16le'))) return format;
+  }
+  return 'doc';
+}
+
+const LEGACY_ADVICE: Readonly<Record<string, string>> = {
+  ppt: 'legacy .ppt is not supported — open it in PowerPoint and re-save as .pptx',
+  xls: 'legacy .xls is not supported — spreadsheets are not a slimdoc target; export the sheet as .csv',
+};
+
+/** Zips we can name from an entry name, and the route out of each. */
+const ZIP_REFUSALS: ReadonlyArray<{ marker: string; format: string; message: string }> = [
+  {
+    marker: 'xl/workbook.xml',
+    format: 'xlsx',
+    message: 'Excel workbooks are not supported — export the sheet as .csv',
+  },
+  {
+    marker: 'Index/Document.iwa',
+    format: 'key',
+    message: 'Keynote files are not supported — export as .pptx or .pdf',
+  },
+  {
+    marker: 'opendocument.presentation',
+    format: 'odp',
+    message: 'OpenDocument presentations are not supported — export as .pptx',
+  },
+  {
+    marker: 'opendocument.text',
+    format: 'odt',
+    message: 'OpenDocument text is not supported — export as .docx',
+  },
+];
+
+/** Refuse the binary formats we can name, each with its conversion recipe. */
 function rejectKnownBinary(buf: Buffer, source: string): void {
   if (startsWith(buf, OLE2_MAGIC)) {
-    throw new UnsupportedFormatError(
-      'legacy .doc is not supported — re-save as .docx, or run: ' +
-        `textutil -convert docx ${source}`,
-      'doc',
-    );
+    const format = ole2Format(buf);
+    const advice =
+      LEGACY_ADVICE[format] ??
+      `legacy .doc is not supported — re-save as .docx, or run: textutil -convert docx ${source}`;
+    throw new UnsupportedFormatError(advice, format);
   }
-  if (startsWith(buf, PDF_MAGIC)) {
+  if (startsWith(buf, ZIP_MAGIC)) {
+    for (const { marker, format, message } of ZIP_REFUSALS) {
+      if (buf.includes(marker, 0, 'latin1')) throw new UnsupportedFormatError(message, format);
+    }
+  }
+  if (looksLikePdf(buf)) {
     throw new UnsupportedFormatError(
       `PDF is not supported — run: pdftotext ${source} - | slimdoc`,
       'pdf',

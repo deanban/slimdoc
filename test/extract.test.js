@@ -378,6 +378,90 @@ test('unsupported: pdf throws with a pdftotext hint', async () => {
   );
 });
 
+/**
+ * The header is only *usually* at byte zero — the specification allows leading
+ * junk before `%PDF`, and mail gateways and scanners produce exactly that.
+ */
+test('unsupported: a pdf with leading junk is still recognised as a pdf', async () => {
+  const pdf = Buffer.concat([
+    Buffer.alloc(200, 0x20),
+    Buffer.from('%PDF-1.7\n1 0 obj\n', 'latin1'),
+  ]);
+  await assert.rejects(
+    () => extractFromBuffer(pdf, { filename: 'scan.pdf' }),
+    (err) => err instanceof UnsupportedFormatError && err.format === 'pdf',
+  );
+});
+
+test('unsupported: junk far past the header does not make a text file a pdf', async () => {
+  const text = Buffer.concat([Buffer.alloc(4000, 0x20), Buffer.from('%PDF is discussed below.')]);
+  const doc = await extractFromBuffer(text, { filename: 'notes.txt' });
+  assert.equal(doc.format, 'text');
+});
+
+/**
+ * A legacy container is refused by what it actually holds. Told only that the
+ * bytes are OLE2, slimdoc used to advise re-saving a PowerPoint deck as .docx.
+ */
+const ole2 = (stream) =>
+  Buffer.concat([
+    Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+    Buffer.alloc(64),
+    Buffer.from(stream, 'utf16le'),
+  ]);
+
+test('unsupported: a legacy .ppt is not told to re-save as .docx', async () => {
+  await assert.rejects(
+    () => extractFromBuffer(ole2('PowerPoint Document'), { filename: 'deck.ppt' }),
+    (err) => {
+      assert.equal(err.format, 'ppt');
+      assert.match(err.message, /legacy \.ppt is not supported/);
+      assert.doesNotMatch(err.message, /docx/);
+      return true;
+    },
+  );
+});
+
+test('unsupported: a legacy .xls names spreadsheets, not Word', async () => {
+  await assert.rejects(
+    () => extractFromBuffer(ole2('Workbook'), { filename: 'budget.xls' }),
+    (err) => err.format === 'xls' && /spreadsheet/i.test(err.message),
+  );
+});
+
+test('unsupported: an OLE2 container names its type from the bytes, not the name', async () => {
+  await assert.rejects(
+    () => extractFromBuffer(ole2('PowerPoint Document'), { filename: 'mislabelled.doc' }),
+    (err) => err.format === 'ppt',
+  );
+});
+
+/** A zip whose entry names say what it is. The names are stored uncompressed. */
+const zipNamed = (...parts) =>
+  Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from(parts.join(' '), 'latin1')]);
+
+test('unsupported: an .xlsx is refused by name with a route out', async () => {
+  await assert.rejects(
+    () => extractFromBuffer(zipNamed('xl/workbook.xml'), { filename: 'budget.xlsx' }),
+    (err) => {
+      assert.equal(err.format, 'xlsx');
+      assert.match(err.message, /csv/i);
+      return true;
+    },
+  );
+});
+
+test('unsupported: Keynote and OpenDocument are named rather than called binary', async () => {
+  await assert.rejects(
+    () => extractFromBuffer(zipNamed('Index/Document.iwa'), { filename: 'deck.key' }),
+    (err) => err.format === 'key',
+  );
+  await assert.rejects(
+    () => extractFromBuffer(zipNamed('mimetype', 'opendocument.presentation'), { filename: 'a.odp' }),
+    (err) => err.format === 'odp',
+  );
+});
+
 test('unsupported: arbitrary binary throws rather than emitting mojibake', async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfd, 0xfc]);
   await assert.rejects(

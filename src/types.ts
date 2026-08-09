@@ -96,7 +96,7 @@ export function resolveOptions(options: Partial<CleanOptions> = {}): CleanOption
   return { ...PRESETS[options.preset ?? 'balanced'], ...options };
 }
 
-export type SourceFormat = 'docx' | 'markdown' | 'html' | 'rtf' | 'text';
+export type SourceFormat = 'docx' | 'pdf' | 'pptx' | 'markdown' | 'html' | 'rtf' | 'text';
 
 export interface ExtractedDoc {
   text: string;
