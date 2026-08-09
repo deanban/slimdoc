@@ -1,12 +1,14 @@
 {
   "name": "slimdoc",
-  "version": "0.1.2",
-  "description": "Shrink any document — Word, Markdown, HTML, RTF or pasted text — into clean, token-cheap input for an LLM.",
+  "version": "0.2.0",
+  "description": "Shrink any document — Word, PowerPoint, PDF, Markdown, HTML, RTF or pasted text — into clean, token-cheap input for an LLM.",
   "keywords": [
     "llm",
     "tokens",
     "whitespace",
     "docx",
+    "pptx",
+    "pdf",
     "markdown",
     "cleanup",
     "transcript",

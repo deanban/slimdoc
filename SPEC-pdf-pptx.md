@@ -5,6 +5,37 @@
 > (`pdf`, `pptx`), fixes one pre-existing bug (docx tables), and changes two lines of
 > `SPEC.md` — the dependency rule and the Node floor.
 
+## What shipped, and where it differs from this document
+
+All seven phases are implemented. Three decisions were taken differently, each
+deliberately:
+
+**Phase 4 is the fenced fallback only.** No coordinate clustering, no confidence gate,
+no pipe tables reconstructed from a PDF. A run of three or more rows that line up is
+preserved verbatim in a fenced block; that is the whole of it. The gate was the design's
+largest correctness risk for a benefit the corpus does not demonstrate — a malformed
+pipe table asserts a structure that is not in the file, and the fenced block asserts
+nothing while preserving the same information. If the gate is built later it upgrades
+what the existing flag emits.
+
+**`ExtractOptions.inferTables` is named `preserveTables`**, because preserving alignment
+is what it now does. `--no-tables` is unchanged.
+
+**`Section` is exposed on `SectionedDoc`, an internal supertype of `ExtractedDoc`.**
+`ExtractedDoc` itself is untouched and `Section` is not exported from the package root,
+so the "internal for now" decision holds. `cleanDocument` *is* exported, because a
+library caller reaching for `clean()` on a paged document would otherwise silently lose
+the section boundary the CLI gets for free.
+
+Two smaller notes. `src/cli.ts` was split into `cli.ts`, `cli-options.ts` and
+`cli-report.ts` before the new flags landed, since it was already over this project's
+400-line file limit. And the acceptance corpus is the generated `kitchen-sink.*`
+fixtures plus ad-hoc runs against real PDFs on the author's machine; the real-world
+corpus this document asks for — an exported deck, an academic paper, an OCR'd document,
+a third-party-generated PPTX — has not been assembled, so the quality claims rest on
+narrower evidence than intended. Running against real files was not wasted: it is what
+found the subscript-ordering and split-word bugs that the fixtures did not.
+
 ## The shape of the problem
 
 The two formats look similar from the CLI and are nothing alike underneath.

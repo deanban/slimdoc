@@ -171,12 +171,15 @@ extractors — they are a reference point, not an assertion:
 
 | | on disk | extracted | tokens before → after | warnings |
 |---|---|---|---|---|
-| `kitchen-sink.html` | 43.1 kB | 5.3 kB | ~1,560 → ~1,547 | 10 images dropped, 6 merged cells flattened |
-| `kitchen-sink.docx` | 108.9 kB | 4.3 kB | ~1,272 → ~1,258 | 4 images dropped / 1 kept, 5 merged cells flattened |
-| `kitchen-sink.pptx` | 122.1 kB | — | — | refused: not yet a supported format |
-| `kitchen-sink.pdf` | 97.3 kB | — | — | refused: not yet a supported format |
+| `kitchen-sink.html` | 43.1 kB | 5.2 kB | ~1,560 → ~1,547 | 10 images dropped, 6 merged cells flattened |
+| `kitchen-sink.docx` | 108.9 kB | 4.2 kB | ~1,272 → ~1,258 | 4 images dropped / 1 kept, 5 merged cells flattened |
+| `kitchen-sink.pptx` | 122.1 kB | 2.4 kB | ~716 → ~699 | 4 images dropped / 1 kept, 4 merged cells flattened, 1 hidden slide skipped |
+| `kitchen-sink.pdf` | 97.3 kB | 4.3 kB | ~997 → ~969 | 1 textless page, 10 running header/footer lines suppressed, 2 regions preserved as preformatted text |
 
-The two refusals are correct, not bugs: `pptx` and `pdf` support is the subject
-of `SPEC-pdf-pptx.md` and does not exist yet. The interesting number is the
-first column against the second — 43 kB of HTML carries 5.3 kB of meaning, and
-109 kB of Word carries 4.3 kB.
+The interesting number is the first column against the second — 122 kB of deck
+carries 2.4 kB of meaning, and 109 kB of Word carries 4.2 kB. Whole-corpus peak
+RSS is about 97 MB, most of it pdf.js.
+
+The `pptx` row is measured at defaults, so it excludes the chart series; with
+`--chart-data` the deck extracts about 2.7 kB. The `pdf` row includes the two
+preserved grid regions, which is most of the gap between it and the deck.

@@ -123,6 +123,24 @@ test('detectFormat: rtf, html and markdown', async () => {
   );
 });
 
+/**
+ * The dependency rule: `mammoth`, `unpdf` and `saxes` are each imported lazily,
+ * so a Markdown or text run loads none of them. This matters most for `npx`
+ * cold start, which is the headline entry point in the README — and it is
+ * checked statically because a dynamic import that has been made static again
+ * is invisible at runtime until someone measures a slow `npx`.
+ */
+test('the heavy parsers are behind a dynamic import', async () => {
+  const source = await readFile(new URL('../dist/extract.js', import.meta.url), 'utf8');
+  const staticImports = [...source.matchAll(/^import .*?from ["']([^"']+)["']/gm)].map((m) => m[1]);
+
+  for (const heavy of ['unpdf', 'saxes', './extract-pdf.js', './extract-pptx.js']) {
+    assert.ok(!staticImports.includes(heavy), `${heavy} is imported statically`);
+  }
+  assert.match(source, /await import\(["']\.\/extract-pdf\.js["']\)/);
+  assert.match(source, /await import\(["']\.\/extract-pptx\.js["']\)/);
+});
+
 test('SUPPORTED_EXTENSIONS covers every documented input', () => {
   for (const ext of ['.docx', '.pptx', '.pptm', '.potx', '.pdf', '.md', '.markdown',
     '.mdx', '.txt', '.csv', '.json', '.yaml', '.yml', '.html', '.htm', '.rtf']) {
