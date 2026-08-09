@@ -2,15 +2,19 @@ import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import mammoth from 'mammoth';
 
-import type { ExtractedDoc, SourceFormat } from './types.js';
+import { resolveExtractOptions } from './types.js';
+import type { ExtractOverrides, ExtractedDoc, Limits, SourceFormat } from './types.js';
 import { UnsupportedFormatError } from './errors.js';
 import { htmlToText, meaningfulAlt } from './extract-html.js';
 import { rtfToText } from './extract-rtf.js';
+import type { SectionedDoc } from './sections.js';
+import { formatBytes } from './tokens.js';
 
 export { UnsupportedFormatError };
 
 export const SUPPORTED_EXTENSIONS: readonly string[] = [
   '.docx',
+  '.pptx', '.pptm', '.potx',
   '.md', '.markdown', '.mdx',
   '.txt', '.text', '.log',
   '.csv', '.tsv',
@@ -18,6 +22,8 @@ export const SUPPORTED_EXTENSIONS: readonly string[] = [
   '.html', '.htm',
   '.rtf',
 ];
+
+const PPTX_EXTENSIONS = new Set(['.pptx', '.pptm', '.potx']);
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx']);
 const HTML_EXTENSIONS = new Set(['.html', '.htm', '.xhtml']);
@@ -79,6 +85,11 @@ function looksLikeDocx(buf: Buffer): boolean {
   return buf.includes('word/document.xml', 0, 'latin1');
 }
 
+function looksLikePptx(buf: Buffer): boolean {
+  if (!startsWith(buf, ZIP_MAGIC)) return false;
+  return buf.includes('ppt/presentation.xml', 0, 'latin1');
+}
+
 function looksLikeRtf(buf: Buffer): boolean {
   return buf.subarray(0, 5).toString('latin1') === '{\\rtf';
 }
@@ -96,9 +107,11 @@ export function detectFormat(buf: Buffer, filename?: string): SourceFormat {
   const ext = filename ? extname(filename).toLowerCase() : '';
 
   if (looksLikeDocx(buf)) return 'docx';
+  if (looksLikePptx(buf)) return 'pptx';
   // Trust a .docx extension only if the bytes are at least a zip: a .doc file
   // misnamed .docx should reach the "re-save as .docx" error, not mammoth.
   if (ext === '.docx' && startsWith(buf, ZIP_MAGIC)) return 'docx';
+  if (PPTX_EXTENSIONS.has(ext) && startsWith(buf, ZIP_MAGIC)) return 'pptx';
   if (looksLikeRtf(buf)) return 'rtf';
   if (ext === '.rtf') return 'rtf';
   if (HTML_EXTENSIONS.has(ext)) return 'html';
@@ -275,14 +288,36 @@ function normaliseNewlines(text: string): string {
 // Public API
 // --------------------------------------------------------------------------
 
+/**
+ * Reject an oversized file before any of it is parsed. The caps live in
+ * `ExtractOptions` rather than here so that a library caller reading a known
+ * enormous document can raise them deliberately.
+ */
+function rejectOversized(buf: Buffer, limits: Limits): void {
+  if (buf.length <= limits.maxInputBytes) return;
+  throw new UnsupportedFormatError(
+    `is ${formatBytes(buf.length)}, over the ${formatBytes(limits.maxInputBytes)} input limit`,
+    'oversized',
+  );
+}
+
 export async function extractFromBuffer(
   buf: Buffer,
-  hint?: { filename?: string },
-): Promise<ExtractedDoc> {
+  hint?: { filename?: string; extract?: ExtractOverrides },
+): Promise<SectionedDoc> {
   const source = hint?.filename ?? '<buffer>';
   const format = detectFormat(buf, hint?.filename);
+  const extract = resolveExtractOptions(hint?.extract);
+  rejectOversized(buf, extract.limits);
 
   if (format === 'docx') return extractDocx(buf, source);
+  if (format === 'pptx') {
+    // Lazily imported, with `saxes` behind it: a Markdown or text run must not
+    // pay for a parser it never reaches. `npx slimdoc file.md` is the headline
+    // entry point, and cold start is most of what it feels like.
+    const { extractPptx } = await import('./extract-pptx.js');
+    return extractPptx(buf, source, extract);
+  }
 
   rejectKnownBinary(buf, source);
   const raw = decodeTextStrict(buf);
@@ -311,8 +346,11 @@ export async function extractFromBuffer(
   return { text: normaliseNewlines(raw), format, source, warnings: [] };
 }
 
-export async function extractFromFile(filePath: string): Promise<ExtractedDoc> {
+export async function extractFromFile(
+  filePath: string,
+  options?: ExtractOverrides,
+): Promise<SectionedDoc> {
   const buf = await readFile(filePath);
-  const doc = await extractFromBuffer(buf, { filename: filePath });
+  const doc = await extractFromBuffer(buf, { filename: filePath, ...(options && { extract: options }) });
   return { ...doc, source: filePath };
 }

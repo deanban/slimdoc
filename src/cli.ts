@@ -46,6 +46,10 @@ Fine control (override the preset; every flag has a --no- counterpart)
 Documents
   -t, --transcript        tidy a meeting transcript: drop per-line timestamps and
                           join/leave noise, merge consecutive turns by one speaker
+      --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
+      --section-headings  emit \`## Page 3\` / \`## Slide 3 — Title\` markers
+      --hidden            include hidden slides and off-slide text
+      --max-pages <n>     cap on the pages actually read (default 500)
 Other
   -s, --stats             print a before/after report to stderr
   -q, --quiet             suppress warnings and the stats banner
@@ -68,7 +72,7 @@ function outputName(source: string): string {
   if (source.startsWith('<')) return `${source.replace(/[<>]/g, '')}.md`;
   const base = basename(source);
   const ext = extname(base).toLowerCase();
-  const rewritten = ['.docx', '.rtf', '.html', '.htm', ''];
+  const rewritten = ['.docx', '.pptx', '.pptm', '.potx', '.rtf', '.html', '.htm', ''];
   return rewritten.includes(ext) ? `${base.slice(0, base.length - ext.length)}.md` : base;
 }
 
@@ -85,9 +89,11 @@ async function collect(inv: Invocation): Promise<{ docs: SectionedDoc[]; failed:
   const docs: SectionedDoc[] = [];
   let failed = false;
 
+  const extract = inv.extractOpts;
+
   if (inv.clipboard) {
     const text = await readClipboard();
-    const doc = await extractFromBuffer(Buffer.from(text, 'utf8'));
+    const doc = await extractFromBuffer(Buffer.from(text, 'utf8'), { extract });
     docs.push({ ...doc, source: '<clipboard>' });
     return { docs, failed };
   }
@@ -95,14 +101,14 @@ async function collect(inv: Invocation): Promise<{ docs: SectionedDoc[]; failed:
   if (inv.files.length === 0) {
     const buf = await readStdinBuffer();
     if (buf === null) throw new UsageError('no input — give a file, pipe stdin, or use --clipboard');
-    const doc = await extractFromBuffer(buf);
+    const doc = await extractFromBuffer(buf, { extract });
     docs.push({ ...doc, source: '<stdin>' });
     return { docs, failed };
   }
 
   for (const file of inv.files) {
     try {
-      docs.push(await extractFromFile(file));
+      docs.push(await extractFromFile(file, extract));
     } catch (e) {
       writeErr(`slimdoc: ${file}: ${inputErrorMessage(e)}`);
       failed = true;
@@ -192,7 +198,7 @@ function cleanEach(inv: Invocation, docs: SectionedDoc[]): { results: Result[]; 
       hinted = true;
     }
     try {
-      const cleaned = cleanDocument(doc, inv.cleanOpts);
+      const cleaned = cleanDocument(doc, inv.cleanOpts, inv.extractOpts);
       results.push({ doc, ...cleaned, source: doc.source, sourceBytes: onDiskSize(doc.source) });
     } catch (e) {
       writeErr(`slimdoc: ${doc.source}: ${messageOf(e)}`);

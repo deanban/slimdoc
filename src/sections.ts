@@ -13,7 +13,7 @@ import { computeStats } from './tokens.js';
 import { resolveExtractOptions } from './types.js';
 import type {
   CleanOptions,
-  ExtractOptions,
+  ExtractOverrides,
   ExtractedDoc,
   SourceFormat,
   Stats,
@@ -73,7 +73,7 @@ function bodyOf(section: Section, format: SourceFormat, headings: boolean): stri
 export function cleanDocument(
   doc: SectionedDoc,
   cleanOptions?: Partial<CleanOptions>,
-  extractOptions?: Partial<ExtractOptions>,
+  extractOptions?: ExtractOverrides,
 ): CleanedDoc {
   const sections = doc.sections;
   if (sections === undefined || sections.length === 0) {

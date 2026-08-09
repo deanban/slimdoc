@@ -8,8 +8,9 @@ import { basename, extname } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { messageOf } from './errors.js';
-import { resolveOptions } from './types.js';
-import type { CleanOptions, Preset } from './types.js';
+import { resolveExtractOptions, resolveOptions } from './types.js';
+import type { CleanOptions, ExtractOptions, ExtractOverrides, Preset } from './types.js';
+import { parseRanges } from './utils/ranges.js';
 
 export class UsageError extends Error {}
 
@@ -40,12 +41,23 @@ const PRESET_FLAGS: Record<string, Preset> = {
   aggressive: 'aggressive',
 };
 
+/** Boolean keys of ExtractOptions, so `--x` / `--no-x` can drive them too. */
+type BooleanExtractKey = {
+  [K in keyof ExtractOptions]: ExtractOptions[K] extends boolean ? K : never;
+}[keyof ExtractOptions];
+
+const EXTRACT_FLAGS: Record<string, BooleanExtractKey> = {
+  hidden: 'hiddenContent',
+  'section-headings': 'sectionHeadings',
+};
+
 /** Boolean CLI switches whose long name is also their field name. */
 const CLI_FLAGS = ['clipboard', 'write', 'copy', 'json', 'stats', 'quiet', 'help', 'version'] as const;
 type CliFlag = (typeof CLI_FLAGS)[number];
 
 export type Invocation = Record<CliFlag, boolean> & {
   cleanOpts: CleanOptions;
+  extractOpts: ExtractOptions;
   files: string[];
   out: string | undefined;
   outDir: string | undefined;
@@ -67,13 +79,16 @@ function optionSpecs(): Record<string, OptionSpec> {
     json: { type: 'boolean', short: 'j' },
     'max-blank-lines': { type: 'string' },
     'keep-tabs': { type: 'boolean' },
+    pages: { type: 'string' },
+    'max-pages': { type: 'string' },
     transcript: { type: 'boolean', short: 't' },
     stats: { type: 'boolean', short: 's' },
     quiet: { type: 'boolean', short: 'q' },
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'V' },
   };
-  for (const name of [...Object.keys(CLEAN_FLAGS), ...Object.keys(PRESET_FLAGS)]) {
+  const switches = [...Object.keys(CLEAN_FLAGS), ...Object.keys(PRESET_FLAGS), ...Object.keys(EXTRACT_FLAGS)];
+  for (const name of switches) {
     specs[name] ??= { type: 'boolean' };
     specs[`no-${name}`] = { type: 'boolean' };
   }
@@ -108,9 +123,10 @@ export function parseInvocation(argv: string[]): Invocation {
     throw new UsageError(messageOf(e));
   }
 
-  const overrides: Partial<CleanOptions> = {};
+  const overrides: Overrides = { clean: {}, extract: {} };
   const inv = {
     cleanOpts: resolveOptions(),
+    extractOpts: resolveExtractOptions(),
     files: parsed.positionals,
     out: undefined,
     outDir: undefined,
@@ -124,25 +140,36 @@ export function parseInvocation(argv: string[]): Invocation {
     applyToken(inv, overrides, name, !negated, token.value);
   }
 
-  inv.cleanOpts = resolveOptions(overrides);
+  inv.cleanOpts = resolveOptions(overrides.clean);
+  inv.extractOpts = resolveExtractOptions(overrides.extract);
   return inv;
+}
+
+interface Overrides {
+  clean: Partial<CleanOptions>;
+  extract: ExtractOverrides;
 }
 
 function applyToken(
   inv: Invocation,
-  overrides: Partial<CleanOptions>,
+  overrides: Overrides,
   name: string,
   on: boolean,
   value: string | undefined,
 ): void {
   const cleanKey = CLEAN_FLAGS[name];
   if (cleanKey !== undefined) {
-    overrides[cleanKey] = on;
+    overrides.clean[cleanKey] = on;
+    return;
+  }
+  const extractKey = EXTRACT_FLAGS[name];
+  if (extractKey !== undefined) {
+    overrides.extract[extractKey] = on;
     return;
   }
   const preset = PRESET_FLAGS[name];
   if (preset !== undefined) {
-    if (on) overrides.preset = preset;
+    if (on) overrides.clean.preset = preset;
     return;
   }
   if (isCliFlag(name)) {
@@ -152,10 +179,16 @@ function applyToken(
 
   switch (name) {
     case 'keep-tabs':
-      overrides.tabsToSpaces = !on;
+      overrides.clean.tabsToSpaces = !on;
       break;
     case 'max-blank-lines':
-      overrides.maxBlankLines = parseCount(value);
+      overrides.clean.maxBlankLines = parseCount(value);
+      break;
+    case 'pages':
+      overrides.extract.pages = parseSelection(value);
+      break;
+    case 'max-pages':
+      overrides.extract.limits = { ...overrides.extract.limits, maxPages: parsePositive(value, '--max-pages') };
       break;
     case 'out':
       inv.out = value;
@@ -166,6 +199,22 @@ function applyToken(
     default:
       throw new UsageError(`unknown option --${name}`);
   }
+}
+
+function parseSelection(value: string | undefined): ExtractOptions['pages'] {
+  try {
+    return parseRanges(value ?? '');
+  } catch (e) {
+    throw new UsageError(`--pages: ${messageOf(e)}`);
+  }
+}
+
+function parsePositive(value: string | undefined, flag: string): number {
+  const n = Number(value);
+  if (value === undefined || !Number.isInteger(n) || n < 1) {
+    throw new UsageError(`${flag} needs a whole number >= 1 (got "${value ?? ''}")`);
+  }
+  return n;
 }
 
 function parseCount(value: string | undefined): number {
@@ -196,7 +245,10 @@ export function validate(inv: Invocation): void {
 }
 
 /** Extensions whose readers expect a container, not the Markdown text slimdoc emits. */
-const NOT_A_TEXT_TARGET = ['.docx', '.doc', '.rtf', '.pdf', '.odt', '.pages'];
+const NOT_A_TEXT_TARGET = [
+  '.docx', '.doc', '.rtf', '.pdf', '.odt', '.pages',
+  '.pptx', '.pptm', '.potx', '.ppt', '.key', '.odp', '.xlsx',
+];
 
 /**
  * Writing text into a `.docx` name produces a file Word opens with "unreadable content".

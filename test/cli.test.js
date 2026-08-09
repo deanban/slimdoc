@@ -346,3 +346,55 @@ test('--out refuses a .docx target because the output is Markdown text', async (
   assert.match(stderr, /cleaned\.md/);
   await assert.rejects(readFile(target), { code: 'ENOENT' });
 });
+
+// --------------------------------------------------------------------------
+// documents with pages or slides
+// --------------------------------------------------------------------------
+
+const DECK = new URL('./fixtures/corpus/kitchen-sink.pptx', import.meta.url).pathname;
+
+test('--pages selects a range of slides', async () => {
+  const { code, stdout } = await cli([DECK, '--pages', '2-3', '--quiet']);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /Agenda/);
+  assert.match(stdout, /Summary/);
+  assert.doesNotMatch(stdout, /Runbook/);
+});
+
+test('--pages refuses a range it cannot read', async () => {
+  const { code, stderr } = await cli([DECK, '--pages', '3-1']);
+
+  assert.equal(code, 2);
+  assert.match(stderr, /page or page range/);
+});
+
+test('--section-headings labels each slide', async () => {
+  const { code, stdout } = await cli([DECK, '--section-headings', '--safe', '--quiet']);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /^## Slide 2 — Agenda$/m);
+});
+
+test('--hidden brings back the slides the deck hides', async () => {
+  const plain = await cli([DECK, '--quiet']);
+  const shown = await cli([DECK, '--hidden', '--quiet']);
+
+  assert.doesNotMatch(plain.stdout, /HIDDEN SLIDE MARKER/);
+  assert.match(shown.stdout, /HIDDEN SLIDE MARKER/);
+});
+
+test('--stats reports a line per slide', async () => {
+  const { code, stderr } = await cli([DECK, '--stats', '-o', join(dir, 'deck.md')]);
+
+  assert.equal(code, 0);
+  assert.match(stderr, /1\. {2}Refit Status/);
+  assert.match(stderr, /8\. {2}Runbook.*tokens/);
+});
+
+test('a deck is refused for in-place rewriting', async () => {
+  const { code, stderr } = await cli([DECK, '--write']);
+
+  assert.equal(code, 1);
+  assert.match(stderr, /refusing to rewrite a pptx file in place/);
+});

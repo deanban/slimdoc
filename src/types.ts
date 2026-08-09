@@ -171,7 +171,10 @@ export const EXTRACT_DEFAULTS: ExtractOptions = {
   limits: DEFAULT_LIMITS,
 };
 
-export function resolveExtractOptions(options: Partial<ExtractOptions> = {}): ExtractOptions {
+/** What a caller may pass: every field optional, `limits` included field by field. */
+export type ExtractOverrides = Partial<Omit<ExtractOptions, 'limits'>> & { limits?: Partial<Limits> };
+
+export function resolveExtractOptions(options: ExtractOverrides = {}): ExtractOptions {
   return {
     ...EXTRACT_DEFAULTS,
     ...options,

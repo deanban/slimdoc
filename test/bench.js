@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
 
 import { extractFromFile } from '../dist/extract.js';
-import { clean } from '../dist/clean.js';
-import { computeStats, formatBytes } from '../dist/tokens.js';
+import { cleanDocument } from '../dist/sections.js';
+import { formatBytes } from '../dist/tokens.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(HERE, 'fixtures', 'corpus');
@@ -40,11 +40,12 @@ async function measure(path) {
     return { path, bytes, unsupported: err.message };
   }
 
+  // cleanDocument, not clean: a paged document is cleaned section by section,
+  // and measuring the other path would measure something slimdoc never runs.
   const rows = PRESETS.map((preset) => {
     const at = process.hrtime.bigint();
-    const text = clean(doc.text, { preset });
-    const ms = Number(process.hrtime.bigint() - at) / 1e6;
-    return { preset, stats: computeStats(doc.text, text), ms };
+    const { stats } = cleanDocument(doc, { preset });
+    return { preset, stats, ms: Number(process.hrtime.bigint() - at) / 1e6 };
   });
 
   const totalMs = Number(process.hrtime.bigint() - started) / 1e6;
