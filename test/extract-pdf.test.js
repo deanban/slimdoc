@@ -256,6 +256,77 @@ test('pdf: suppression can be turned off', async () => {
 });
 
 // --------------------------------------------------------------------------
+// rotation
+// --------------------------------------------------------------------------
+
+const rotated = (deg) => join(HERE, 'fixtures', 'corpus', `rotated-${deg}.pdf`);
+
+/**
+ * `/Rotate` turns the paper, not the text. Every glyph keeps the position it
+ * had in unrotated user space, and that is the space `getTextContent()` reports
+ * coordinates in — so the four files, whose content streams are byte-identical,
+ * have to extract to the same text.
+ *
+ * They did not. Page height came from `getViewport({scale: 1})`, which *is*
+ * rotated: 612 on a page 792 points tall. Every rule that measures against the
+ * height then measured against the wrong one, and the 12% margin band that
+ * marks page furniture reached 30% down the page. Body text inside it was
+ * collected as a running header and, being genuinely repeated, deleted from
+ * every page but the first.
+ *
+ * The failure needs four pages to appear at all, since suppression will not
+ * call anything repeated below that — which is why the fixture has five and why
+ * no single-page probe would have found it.
+ */
+test('pdf: a rotated page is read as the same document', async () => {
+  const [upright, ...turned] = await Promise.all(
+    [0, 90, 180, 270].map(async (deg) => {
+      const doc = await extractFromFile(rotated(deg));
+      return { deg, text: doc.sections.map((s) => s.text).join('\n'), warnings: doc.warnings };
+    }),
+  );
+
+  for (const page of turned) {
+    assert.equal(page.text, upright.text, `/Rotate ${page.deg} read differently from /Rotate 0`);
+  }
+  for (const page of [upright, ...turned]) {
+    assert.equal(
+      page.text.split('All figures are provisional').length - 1,
+      5,
+      `/Rotate ${page.deg} lost body text to header suppression:\n${page.text}`,
+    );
+    assert.ok(
+      page.warnings.some((w) => /suppressed 8 repeated/.test(w)),
+      `/Rotate ${page.deg}: ${page.warnings.join('; ')}`,
+    );
+  }
+});
+
+/**
+ * And the real thing: a scanned filing whose pages carry `/Rotate 90` because
+ * that is how they went through the scanner, not because a generator wrote it.
+ *
+ * It is two pages, so suppression — which needs four — never runs on it, and
+ * the deletions the fixture above demonstrates cannot happen here. What it does
+ * check is the other consumer of the page height, column ordering, and that the
+ * fields of a genuinely rotated form come out at all: this file is the reason
+ * to believe pdf.js reports unrotated coordinates in practice and not only by
+ * specification.
+ */
+test('pdf: a real rotated form keeps its fields', async (t) => {
+  const file = localFixture('form-rotated', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file);
+  const text = doc.sections.map((s) => s.text).join('\n');
+
+  assert.match(text, /Scan Code/);
+  assert.match(text, /Job Number/);
+  assert.match(text, /Zoning Floor Area \(sq\. ft\.\)/);
+  assert.match(text, /75,503/, 'the total zoning floor area was lost');
+});
+
+// --------------------------------------------------------------------------
 // characters
 // --------------------------------------------------------------------------
 

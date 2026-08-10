@@ -19,6 +19,19 @@ make-corpus-pdf.py   ->  kitchen-sink.pdf     97 kB
 Both the generators and their output are committed, as elsewhere in this
 repository. Regenerate with `python3 test/fixtures/corpus/make-corpus-*.py`.
 
+Alongside them, one narrow set that is not a kitchen sink:
+
+```
+make-rotated-pdfs.py  ->  rotated-{0,90,180,270}.pdf   4 kB each
+```
+
+Four five-page documents with byte-identical content streams, differing only in
+each page's `/Rotate`. They must extract to identical text, and are five pages
+because the defect they were written for — a page height taken from the rotated
+viewport, so the margin band that marks page furniture reached a third of the
+way down the page — cannot appear until running-header suppression has the four
+pages it needs before it will call anything repeated.
+
 Measure with `node test/bench.js` (after `npm run build`). It reports extracted
 size, tokens per preset, timing and peak RSS, and is deliberately **not** part
 of `npm test` — it measures rather than asserts. The `pptx` and `pdf` rows read

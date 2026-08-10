@@ -32,7 +32,7 @@ interface RawItem {
 
 interface PdfPage {
   getTextContent(): Promise<{ items: RawItem[] }>;
-  getViewport(options: { scale: number }): { height: number };
+  getViewport(options: { scale: number; rotation?: number }): { height: number };
 }
 
 interface PdfDocument {
@@ -68,7 +68,12 @@ async function readPage(
   const content = await page.getTextContent();
   const cap = opts.limits.maxItemsPerPage;
   const items = toItems(content.items, cap);
-  const height = page.getViewport({ scale: 1 }).height || DEFAULT_PAGE_HEIGHT;
+  // `rotation: 0` rather than the page's own: `/Rotate` turns the paper, not the
+  // text, and the coordinates above are in unrotated space. A default viewport
+  // reports 612 for a page 792 points tall, so the 12% band that marks page
+  // furniture reached 30% down it and deleted repeated *body* lines as running
+  // headers. Height has to be measured in the space the glyphs are placed in.
+  const height = page.getViewport({ scale: 1, rotation: 0 }).height || DEFAULT_PAGE_HEIGHT;
 
   return {
     page: { index, height, lines: layoutPage(items, height) },
