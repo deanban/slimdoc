@@ -2,7 +2,7 @@
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { parseInvocation, USAGE, UsageError, validate, type Invocation } from './cli-options.js';
@@ -12,7 +12,7 @@ import { extractFromBuffer, extractFromFile } from './extract.js';
 import { readClipboard, readStdinBuffer, writeClipboard } from './io.js';
 import { cleanDocument, type SectionedDoc, type SectionStats } from './sections.js';
 import { looksLikeTranscript } from './transcript.js';
-import type { Stats } from './types.js';
+import type { SourceFormat, Stats } from './types.js';
 
 const HELP = `slimdoc [file...] [options]
 
@@ -72,13 +72,55 @@ function inputErrorMessage(e: unknown): string {
   return messageOf(e);
 }
 
-/** Cleaned output is Markdown-ish text, so a binary/markup source gets a `.md` name. */
-function outputName(source: string): string {
+/**
+ * What a cleaned document should be called on disk.
+ *
+ * The decision is the format slimdoc *read*, not a list of extensions to rewrite.
+ * A list is what was here before, and PDF was never added to it, so a cleaned PDF
+ * went back out under a `.pdf` name no reader can open — while `--out` refused
+ * that exact target and the README promised the extension was corrected.
+ *
+ * `refusesInPlace` already draws this line for `--write`: a text or Markdown
+ * source is still text or Markdown after cleaning and keeps its name, `.csv` and
+ * `.json` included. Everything else became Markdown-ish text on the way through
+ * and is named for what it now holds. Sharing the predicate is what stops the two
+ * output paths from disagreeing again the next time a format lands.
+ */
+function outputName(source: string, format: SourceFormat): string {
   if (source.startsWith('<')) return `${source.replace(/[<>]/g, '')}.md`;
   const base = basename(source);
-  const ext = extname(base).toLowerCase();
-  const rewritten = ['.docx', '.pptx', '.pptm', '.potx', '.rtf', '.html', '.htm', ''];
-  return rewritten.includes(ext) ? `${base.slice(0, base.length - ext.length)}.md` : base;
+  const ext = extname(base);
+  if (ext !== '' && !convertsToMarkdown(format)) return base;
+  return `${base.slice(0, base.length - ext.length)}.md`;
+}
+
+/**
+ * Output names for a whole run, with collisions resolved rather than overwritten.
+ *
+ * `reports/q1/summary.pdf` and `reports/q2/summary.pdf` are one ordinary glob
+ * apart, and writing both to `summary.md` destroys the first result invisibly:
+ * the run succeeds, and the file that survives looks correct. The containing
+ * directory is what the user distinguished them by, so it is what disambiguates
+ * them here.
+ */
+function outputNames(docs: SectionedDoc[]): Map<string, string> {
+  const names = new Map<string, string>();
+  const taken = new Set<string>();
+
+  for (const { source, format } of docs) {
+    const preferred = outputName(source, format);
+    let name = preferred;
+    if (taken.has(name)) {
+      const parent = basename(dirname(source));
+      const ext = extname(preferred);
+      const stem = preferred.slice(0, preferred.length - ext.length);
+      name = parent === '' || parent === '.' ? preferred : `${parent}-${stem}${ext}`;
+      for (let n = 2; taken.has(name); n++) name = `${stem}-${n}${ext}`;
+    }
+    taken.add(name);
+    names.set(source, name);
+  }
+  return names;
 }
 
 interface Result {
@@ -148,9 +190,18 @@ function jsonPayload(results: Result[]): string {
   return `${JSON.stringify(body, null, 2)}\n`;
 }
 
+/**
+ * True when reading this format produced Markdown-ish text rather than something
+ * still of the same kind. Such a document cannot be written back over its source,
+ * and must not keep a name that claims it is still a deck, a PDF or a web page.
+ */
+function convertsToMarkdown(format: SourceFormat): boolean {
+  return format !== 'text' && format !== 'markdown';
+}
+
 /** True when rewriting the input in place would destroy a file we cannot regenerate. */
 function refusesInPlace(doc: SectionedDoc): boolean {
-  return doc.format !== 'text' && doc.format !== 'markdown';
+  return convertsToMarkdown(doc.format);
 }
 
 async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
@@ -168,8 +219,14 @@ async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
     }
   } else if (inv.outDir !== undefined) {
     await mkdir(inv.outDir, { recursive: true });
+    const names = outputNames(results.map((r) => r.doc));
     for (const r of results) {
-      await writeFile(join(inv.outDir, outputName(r.doc.source)), r.text, 'utf8');
+      const preferred = outputName(r.doc.source, r.doc.format);
+      const name = names.get(r.doc.source) ?? preferred;
+      if (!inv.quiet && name !== preferred) {
+        writeErr(dim(`slimdoc: ${label(r.doc.source)}: written as ${name} to avoid overwriting another result`));
+      }
+      await writeFile(join(inv.outDir, name), r.text, 'utf8');
     }
   } else if (inv.out !== undefined) {
     await writeFile(inv.out, payload, 'utf8');

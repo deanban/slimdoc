@@ -1,11 +1,19 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const CLI_URL = new URL('../dist/cli.js', import.meta.url).href;
+
+/** A real PDF, so the extension-rewrite case runs the extractor it will meet in the field. */
+const GENERATED_PDF = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'fixtures', 'generated', 'two-column-table.pdf',
+);
 
 /**
  * Importing dist/cli.js and calling `run()` inside a child process. A child is used
@@ -269,6 +277,67 @@ test('--out-dir writes one file per input, creating the directory', async () => 
   assert.equal(stdout, '');
   assert.ok((await readFile(join(target, 'd1.md'), 'utf8')).includes('alpha'));
   assert.ok((await readFile(join(target, 'd2.md'), 'utf8')).includes('beta'));
+});
+
+/**
+ * The README promises "with --out-dir the extension is corrected to match the
+ * contents". It was corrected for the formats that existed when the sentence was
+ * written, from a list each new format had to remember to join — and PDF did not,
+ * so a cleaned PDF was written back out under a .pdf name no reader can open.
+ */
+test('--out-dir names a cleaned binary source for what it now contains', async () => {
+  const source = join(dir, 'report.pdf');
+  await copyFile(GENERATED_PDF, source);
+  const target = join(dir, 'outdir-pdf');
+
+  const { code } = await cli(['--out-dir', target, source]);
+  assert.equal(code, 0);
+
+  const written = await readFile(join(target, 'report.md'), 'utf8');
+  assert.match(written, /Crew allocation by deck/);
+  assert.ok(!existsSync(join(target, 'report.pdf')), 'wrote Markdown under a .pdf name');
+});
+
+/**
+ * The other half of the same rule: a format slimdoc did not convert keeps its
+ * name. Renaming `data.csv` to `data.md` would be the same mistake pointing the
+ * other way — `--write` already rewrites these in place, so the two output paths
+ * have to agree on what "still that kind of file" means.
+ */
+test('--out-dir leaves a format it did not convert under its own name', async () => {
+  const source = await fixture('rows.csv', 'deck,crew\n36,12\n10,0\n');
+  const target = join(dir, 'outdir-csv');
+
+  const { code } = await cli(['--out-dir', target, source]);
+  assert.equal(code, 0);
+  assert.match(await readFile(join(target, 'rows.csv'), 'utf8'), /deck,crew/);
+  assert.ok(!existsSync(join(target, 'rows.md')));
+});
+
+/**
+ * Two inputs can share a basename and differ only in their directory, which is
+ * ordinary for `reports/*​/summary.pdf`. Writing both to one name silently
+ * destroys the first result — the failure is invisible, since the run succeeds
+ * and the surviving file looks right.
+ */
+test('--out-dir keeps both results when two inputs share a basename', async () => {
+  await mkdir(join(dir, 'q1'), { recursive: true });
+  await mkdir(join(dir, 'q2'), { recursive: true });
+  const first = join(dir, 'q1', 'summary.md');
+  const second = join(dir, 'q2', 'summary.md');
+  await writeFile(first, 'alpha content\n', 'utf8');
+  await writeFile(second, 'beta content\n', 'utf8');
+  const target = join(dir, 'outdir-collision');
+
+  const { code } = await cli(['--out-dir', target, first, second]);
+  assert.equal(code, 0);
+
+  const written = await Promise.all(
+    (await readdir(target)).sort().map((name) => readFile(join(target, name), 'utf8')),
+  );
+  assert.equal(written.length, 2, `expected two files, got ${written.length}`);
+  assert.ok(written.some((t) => t.includes('alpha')), 'the first input was overwritten');
+  assert.ok(written.some((t) => t.includes('beta')), 'the second input was lost');
 });
 
 test('--write rewrites a text input in place', async () => {
