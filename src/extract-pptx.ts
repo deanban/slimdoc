@@ -19,6 +19,7 @@ import {
   readRels,
   relsPartFor,
   resolvePart,
+  rootAttributes,
   type XmlNode,
 } from './ooxml.js';
 import {
@@ -63,12 +64,20 @@ function relsOf(entries: Entries, part: string): ReturnType<typeof readRels> {
 
 interface SlideRef {
   part: string;
-  root: XmlNode;
   hidden: boolean;
 }
 
-/** The slide parts in presentation order, each already parsed. */
-function slideRefs(entries: Entries, presentation: XmlNode): SlideRef[] {
+/**
+ * The slide parts in presentation order, named but not yet parsed.
+ *
+ * Parsing them here is what `--pages` is asked to avoid: it is reached for
+ * because a deck is large, and every slide the id list named was parsed in full
+ * before the selection could discard it. All that is needed to *number* the
+ * slides is which of them are hidden, and that is one attribute on the document
+ * element — so an unselected slide costs its opening tag, and with
+ * `hiddenContent` set, where the flag changes nothing, it costs nothing at all.
+ */
+function slideRefs(entries: Entries, presentation: XmlNode, hiddenContent: boolean): SlideRef[] {
   const rels = relsOf(entries, PRESENTATION_PART);
   const list = child(presentation, 'p', 'sldIdLst');
   const refs: SlideRef[] = [];
@@ -78,8 +87,10 @@ function slideRefs(entries: Entries, presentation: XmlNode): SlideRef[] {
     if (!rel || rel.external || !SLIDE_RELATIONSHIP.test(rel.type)) continue;
 
     const part = resolvePart(PRESENTATION_PART, rel.target);
-    const root = partOf(entries, part);
-    if (root) refs.push({ part, root, hidden: isTrue(root.attrs['show']) === false });
+    const reader = entries.get(part);
+    if (!reader) continue;
+
+    refs.push({ part, hidden: hiddenContent ? false : isTrue(rootAttributes(reader())['show']) === false });
   }
   return refs;
 }
@@ -190,7 +201,7 @@ export function extractPptx(
     throw new UnsupportedFormatError('is a zip but carries no ppt/presentation.xml', 'pptx');
   }
 
-  const all = slideRefs(entries, presentation);
+  const all = slideRefs(entries, presentation, opts.hiddenContent);
   const included = opts.hiddenContent ? all : all.filter((ref) => !ref.hidden);
   const selection = selectPages(included.length, opts.pages, opts.limits.maxPages);
 
@@ -217,7 +228,9 @@ export function extractPptx(
         return rel && !rel.external ? partOf(entries, resolvePart(ref.part, rel.target)) : undefined;
       },
     };
-    const tree = child(child(ref.root, 'p', 'cSld') ?? ref.root, 'p', 'spTree');
+    const root = partOf(entries, ref.part);
+    if (!root) continue;
+    const tree = child(child(root, 'p', 'cSld') ?? root, 'p', 'spTree');
     const output = tree ? serialiseSpTree(tree, ctx) : { ...totals, blocks: [] };
     addTotals(totals, output);
 

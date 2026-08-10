@@ -344,7 +344,7 @@ interface Limits {
   maxInflatedBytes: number;   // total across all read zip entries
   maxEntryBytes: number;      // one inflated zip entry
   maxPages: number;           // applied to SELECTED pages, not document length
-  maxItemsPerPage: number;    // PDF text items before bailing on a page
+  maxItemsPerPage: number;    // PDF text items kept from a page (output, not work)
 }
 ```
 
@@ -470,8 +470,12 @@ unpdf -> per page (sequential) -> text items with coordinates
 unpdf exposes both `extractTextItems()` and the lower-level `getDocumentProxy()` →
 `page.getTextContent()`. **Both retain coordinates** — a v1 claim to the contrary was
 wrong. The low-level path is chosen for a different reason: it allows processing only
-the *selected* pages, sequentially, under `maxItemsPerPage`, instead of fanning out
-across the whole document.
+the *selected* pages, sequentially, instead of fanning out across the whole document.
+
+`maxItemsPerPage` bounds what a page contributes and not what it costs:
+`getTextContent()` has materialised every run before the cap is applied, and bounding
+that needs an entry point unpdf does not expose. Recorded as a known limit — a cap that
+reads as protection and is not is worse than no cap.
 
 **No image counting.** A v1 error: `getTextContent()` returns neither images nor
 structure-tree `/Alt` content, so counting them requires `getOperatorList()` — real work

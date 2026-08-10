@@ -120,7 +120,10 @@ export interface Limits {
   maxEntryBytes: number;
   /** Applied to SELECTED pages, not to document length. */
   maxPages: number;
-  /** PDF text items before the page is abandoned. */
+  /**
+   * PDF text items kept from one page. Bounds the output, not the work:
+   * `getTextContent()` has built them all before the cap is applied.
+   */
   maxItemsPerPage: number;
 }
 

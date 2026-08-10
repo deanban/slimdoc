@@ -494,3 +494,36 @@ test('extraction is pure: the same buffer twice gives the same text', async () =
   assert.equal(a.text, b.text);
   assert.deepEqual(a.warnings, b.warnings);
 });
+
+/**
+ * `maxInputBytes` exists so that a hostile file is never held in memory, and it
+ * was measured on a buffer the reader had already produced — the one order in
+ * which it cannot do that. By the time the limit was consulted, the bytes it
+ * was there to refuse were resident.
+ *
+ * A file larger than Node will hold at all makes the difference visible rather
+ * than merely theoretical: `readFile` gives up with a bare `RangeError` about
+ * 2 GiB, which says nothing about slimdoc's limits and is not the error the API
+ * documents. The file below is sparse, so it costs a directory entry and no
+ * disk at all.
+ */
+test('limits: a file too large to read is refused by size, not by failing to read it', async (t) => {
+  const { mkdtemp, rm, truncate, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+
+  const directory = await mkdtemp(join(tmpdir(), 'slimdoc-limits-'));
+  const path = join(directory, 'enormous.pdf');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  await writeFile(path, '');
+  await truncate(path, 3_000_000_000);
+
+  await assert.rejects(
+    () => extractFromFile(path),
+    (err) => {
+      assert.ok(err instanceof UnsupportedFormatError, `${err.constructor.name}: ${err.message}`);
+      assert.match(err.message, /is 3\.0 GB, over the 100\.0 MB input limit/);
+      return true;
+    },
+  );
+});

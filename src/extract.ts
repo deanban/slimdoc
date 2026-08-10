@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { extname } from 'node:path';
 import mammoth from 'mammoth';
 
@@ -289,10 +289,10 @@ function normaliseNewlines(text: string): string {
  * `ExtractOptions` rather than here so that a library caller reading a known
  * enormous document can raise them deliberately.
  */
-function rejectOversized(buf: Buffer, limits: Limits): void {
-  if (buf.length <= limits.maxInputBytes) return;
+function rejectOversized(bytes: number, limits: Limits): void {
+  if (bytes <= limits.maxInputBytes) return;
   throw new UnsupportedFormatError(
-    `is ${formatBytes(buf.length)}, over the ${formatBytes(limits.maxInputBytes)} input limit`,
+    `is ${formatBytes(bytes)}, over the ${formatBytes(limits.maxInputBytes)} input limit`,
     'oversized',
   );
 }
@@ -304,7 +304,7 @@ export async function extractFromBuffer(
   const source = hint?.filename ?? '<buffer>';
   const format = detectFormat(buf, hint?.filename);
   const extract = resolveExtractOptions(hint?.extract);
-  rejectOversized(buf, extract.limits);
+  rejectOversized(buf.length, extract.limits);
 
   if (format === 'docx') return extractDocx(buf, source);
   if (format === 'pptx') {
@@ -350,6 +350,12 @@ export async function extractFromFile(
   filePath: string,
   options?: ExtractOverrides,
 ): Promise<SectionedDoc> {
+  // The size comes from `stat`, before the read. Measuring the buffer instead
+  // is the one order in which `maxInputBytes` cannot do what it exists for: by
+  // then the bytes it was meant to refuse are already in memory, and a file
+  // larger than Node will hold at all fails with a `RangeError` about 2 GiB
+  // rather than with the limit that was actually exceeded.
+  rejectOversized((await stat(filePath)).size, resolveExtractOptions(options).limits);
   const buf = await readFile(filePath);
   const doc = await extractFromBuffer(buf, { filename: filePath, ...(options && { extract: options }) });
   return { ...doc, source: filePath };

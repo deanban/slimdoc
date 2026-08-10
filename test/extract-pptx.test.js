@@ -598,6 +598,51 @@ test('pptx: hMerge="true" is a merge, not a cell with text of its own', () => {
 });
 
 // --------------------------------------------------------------------------
+// bounded work
+// --------------------------------------------------------------------------
+
+/**
+ * `--pages 1` has to bound the work, not just the output. Slide order comes
+ * from `<p:sldIdLst>`, and every slide it named was parsed in full before page
+ * selection ran — so asking for one slide of a two-hundred-slide deck parsed
+ * two hundred, and the flag people reach for precisely because a deck is too
+ * big did the whole of the expensive thing anyway.
+ *
+ * A slide nobody asked for is now resolved but not parsed. Unreadable XML in
+ * one is the plainest way to observe that from outside: it cannot fail a run
+ * that never looks at it.
+ */
+test('pptx: --pages parses the slides it selected and no others', () => {
+  const broken = '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">' +
+    '<p:cSld><p:spTree><<<not xml at all';
+  const deck = deckOf([slideXml(textBox(['The slide that was asked for'])), broken, broken]);
+
+  const doc = extractPptx(deck, 'deck.pptx', { pages: [[1, 1]] });
+  assert.equal(doc.sections.length, 1);
+  assert.match(doc.text, /The slide that was asked for/);
+
+  // And without the selection the same deck is still a malformed package, so
+  // the test is measuring what was skipped rather than what was tolerated.
+  assert.throws(() => extractPptx(deck, 'deck.pptx'), /malformed XML/);
+});
+
+/**
+ * The same bound, in bytes. With `--hidden` there is no reason to touch an
+ * unselected slide at all — no `show` attribute to read — so a budget covering
+ * the slides asked for is enough, where before it had to cover the deck.
+ */
+test('pptx: an unselected slide is not inflated when nothing needs its flags', () => {
+  const filler = (n) => textBox([`Slide ${n} `.repeat(400)]);
+  const deck = deckOf([1, 2, 3, 4].map((n) => slideXml(filler(n))));
+
+  const budget = { limits: { maxInflatedBytes: 8_000 } };
+  const doc = extractPptx(deck, 'deck.pptx', { ...budget, pages: [[1, 1]], hiddenContent: true });
+  assert.match(doc.text, /Slide 1/);
+
+  assert.throws(() => extractPptx(deck, 'deck.pptx', budget), /inflated|limit/);
+});
+
+// --------------------------------------------------------------------------
 // plumbing
 // --------------------------------------------------------------------------
 

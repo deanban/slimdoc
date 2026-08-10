@@ -126,6 +126,39 @@ export function textOf(node: XmlNode): string {
   return node.children.reduce((text, c) => text + textOf(c), node.text);
 }
 
+/** Enough of a part to have reached its document element, in one bite. */
+const ROOT_CHUNK = 4096;
+
+/**
+ * The document element's attributes, without building the tree beneath it.
+ *
+ * A slide's `show` attribute decides whether the slide is in the document at
+ * all, and that has to be known for *every* slide before page selection can
+ * number them — while parsing every slide is exactly what page selection exists
+ * to avoid. This reads the opening tag and stops, so an unselected slide costs
+ * one tag instead of its whole shape tree.
+ *
+ * Still a real namespace-aware parse rather than a scan for `show=`: the prefix
+ * is conventional, the attribute may be namespaced, and a tag scanner here would
+ * be the correctness trap this module was written to avoid. Errors past the root
+ * tag are ignored because nothing past it is being read.
+ */
+export function rootAttributes(source: Buffer): Record<string, string> {
+  const parser = new SaxesParser<{ xmlns: true }>({ xmlns: true });
+  let attrs: Record<string, string> | undefined;
+
+  parser.on('error', () => {});
+  parser.on('opentag', (tag) => {
+    attrs ??= toNode(tag).attrs;
+  });
+
+  const text = source.toString('utf8');
+  for (let at = 0; at < text.length && attrs === undefined; at += ROOT_CHUNK) {
+    parser.write(text.slice(at, at + ROOT_CHUNK));
+  }
+  return attrs ?? {};
+}
+
 /**
  * `ST_Boolean`, which XSD spells four ways: `1`, `0`, `true`, `false`.
  *

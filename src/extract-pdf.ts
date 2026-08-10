@@ -59,6 +59,16 @@ function toItems(raw: RawItem[], limit: number): TextItem[] {
   return items;
 }
 
+/**
+ * One page's lines.
+ *
+ * `maxItemsPerPage` bounds the *output*, and only that. `getTextContent()` has
+ * already built every item on the page by the time the cap is applied, so a page
+ * carrying millions of runs costs what it costs and the cap keeps the result
+ * from growing to match. Bounding the work itself needs an entry point unpdf
+ * does not expose — recorded here as a known limit rather than implied to be a
+ * guard, because a cap that reads as protection and is not is worse than none.
+ */
 async function readPage(
   pdf: PdfDocument,
   index: number,
