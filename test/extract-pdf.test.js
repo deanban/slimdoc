@@ -16,7 +16,8 @@ import test from 'node:test';
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
 import { toLines, layoutPage, suppressRunningText } from '../dist/pdf-layout.js';
-import { preserveGridRegions } from '../dist/pdf-preformat.js';
+import { flattenIndents, preserveGridRegions } from '../dist/pdf-preformat.js';
+import { clean } from '../dist/clean.js';
 import { localFixture } from './helpers/local.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -283,6 +284,60 @@ test('pdf: the counter forms are still normalised, so the footer goes', () => {
     assert.equal(suppressRunningText(pages), 6, counters.join(' '));
     assert.deepEqual(pages[3].lines, [], counters.join(' '));
   }
+});
+
+/**
+ * Furniture is what repeats across *pages*. Appearances were counted instead, so
+ * a page that says the same short thing three times in its own margin — a form's
+ * three `N/A` cells, a slide-style footer band — reached `REPEAT_SHARE` without
+ * any other page agreeing. Worse, that page then sat in the appearance list
+ * three times, so `slice(1)` still held it and the filter took *every* copy: the
+ * one this function documents as kept went too, and the content was page-local
+ * to begin with.
+ */
+/**
+ * Footer lines within `POSITION_TOLERANCE` of each other, so they share one
+ * position key — which is what makes them a single repeated line as far as
+ * suppression is concerned, and is ordinary in a footer band whose cells were
+ * set as separate text objects.
+ */
+const footed = (height, ...texts) => ({
+  index: 0,
+  height,
+  lines: texts.map((text, i) => ({ y: 38 + i, left: 72, right: 300, text })),
+});
+
+test('pdf: repetition within one page is not repetition across pages', () => {
+  const pages = [
+    footed(792, 'N/A', 'N/A', 'N/A'),
+    footed(792, 'Applicant name'),
+    footed(792, 'Date of birth'),
+    footed(792, 'Signature'),
+  ];
+
+  assert.equal(suppressRunningText(pages), 0, 'lines local to one page were read as running text');
+  assert.deepEqual(
+    pages.map((p) => p.lines.map((l) => l.text)),
+    [['N/A', 'N/A', 'N/A'], ['Applicant name'], ['Date of birth'], ['Signature']],
+  );
+});
+
+/**
+ * The other half: a page allowed to carry a duplicate must not lose its own copy
+ * when the line *is* furniture elsewhere. Page 1 keeps what it wrote; pages 2-4
+ * are the repetition.
+ */
+test('pdf: the first page keeps its copy when the line repeats elsewhere', () => {
+  const pages = [
+    footed(792, 'ACME LOGISTICS', 'ACME LOGISTICS'),
+    footed(792, 'ACME LOGISTICS'),
+    footed(792, 'ACME LOGISTICS'),
+    footed(792, 'ACME LOGISTICS'),
+  ];
+
+  assert.equal(suppressRunningText(pages), 3);
+  assert.deepEqual(pages[0].lines.map((l) => l.text), ['ACME LOGISTICS', 'ACME LOGISTICS']);
+  assert.deepEqual(pages.slice(1).map((p) => p.lines), [[], [], []]);
 });
 
 /**
@@ -644,4 +699,86 @@ test('pdf: extraction is pure — the same file twice gives the same text', asyn
 
   assert.equal(a.text, b.text);
   assert.deepEqual(a.doc.warnings, b.doc.warnings);
+});
+
+// --------------------------------------------------------------------------
+// indentation from the character grid
+// --------------------------------------------------------------------------
+
+/**
+ * `layOut` pads every line out to its own column so a table keeps its alignment,
+ * and the padding was left in place on the grounds that cleaning would remove it.
+ * `collapseSpaces` removes runs *inside* a line and deliberately keeps the indent,
+ * because a Markdown indent is structure — but a PDF's indent is an x-coordinate,
+ * and keeping it cost twice.
+ *
+ * The token cost was the smaller half. The larger one is here: `isBlockStart`
+ * reads any line indented four spaces or more as an indented code block, so
+ * `canJoin` refused it and `unwrap` — on in every preset — had no measurable
+ * effect on any real paper. Both of these assert the joining, because that is the
+ * part a regression would silently undo.
+ */
+test('pdf: a hanging indent does not survive to block unwrapping', () => {
+  const wrapped = [
+    'The quick brown fox jumps over the lazy dog while',
+    '    the second line continues the very same sentence and',
+    '    a third line finishes the thought completely here.',
+  ].join('\n');
+
+  const { text } = preserveGridRegions(wrapped);
+  const flat = flattenIndents(text);
+
+  assert.equal(flat.split('\n').filter((l) => /^ /.test(l)).length, 0, flat);
+  assert.equal(clean(flat, { preset: 'balanced' }).trim().split('\n').length, 1, clean(flat));
+});
+
+/** Nesting is meaning: regular, unit-multiple depths are an author's, not a grid's. */
+test('pdf: indentation that nests is left alone', () => {
+  const code = ['def containment_margin(readings):', '    total = 0', '    for r in readings:', '        if r.stable:', '            total += r.margin'].join('\n');
+
+  assert.equal(flattenIndents(code), code);
+});
+
+/**
+ * The distinction the first attempt at this missed. Depths derived from
+ * x-coordinates round, so ordinary prose arrives at 3, 5 and 4 — more than one
+ * level, and read as nesting by a rule that only counts them. Real levels are
+ * multiples of one unit.
+ */
+test('pdf: ragged indents from coordinate rounding are not nesting', () => {
+  const ragged = ['A paragraph whose continuation lines', '   drifted by a character', '     and then by another', '    as the grid rounded'].join('\n');
+
+  assert.equal(flattenIndents(ragged).split('\n').filter((l) => /^ /.test(l)).length, 0, flattenIndents(ragged));
+});
+
+/**
+ * OCR sprays runs of two and three spaces between words, so every paragraph line
+ * splits into "fields" — a different number of them each time. One aligned column
+ * recurring in most rows is not rare when every row offers half a dozen word
+ * boundaries, and on the real OCR'd paper here that fenced 69 regions across 8
+ * pages: 498 lines, a quarter of the document, nearly all of it prose. Fenced
+ * content is exempt from cleaning, so each one cost its padding *and* its
+ * unwrapping.
+ */
+test('grid: OCR word spacing is not a table', () => {
+  const ocr = [
+    '   Personally,  I like  some  absolutes   very  much,',
+    'such  as Mate   Abs., which   can Ire blended   excel-',
+    'lently  with  mymh   and jasmine,   and   serves  very',
+    'extensively   in pefimery.',
+  ].join('\n');
+
+  assert.equal(preserveGridRegions(ocr).regions, 0, preserveGridRegions(ocr).text);
+});
+
+/** …and the ragged block that is still fenced, because its columns are far apart. */
+test('grid: a ragged block with wide gaps is still preserved', () => {
+  const ragged = [
+    'Deck 36                  engineering             occupied',
+    'Deck 12                    EPS conduit replacement pending',
+    ' Deck 4                  crew quarters            partial',
+    'Deck 10                  evacuated',
+  ].join('\n');
+
+  assert.equal(preserveGridRegions(ragged).regions, 1);
 });

@@ -70,9 +70,18 @@ function characterWidth(items: TextItem[]): number {
  * Lay one line's items out on a character grid.
  *
  * Positions become columns rather than single spaces, so a table's alignment
- * and a code block's indentation both survive. Where the alignment is not
- * meaningful the runs of spaces cost nothing: `collapseSpaces` removes them
- * during cleaning, and only content that is fenced keeps them.
+ * and a code block's indentation both survive.
+ *
+ * This padding is not free, and the comment here used to say it was — that
+ * "`collapseSpaces` removes them during cleaning, and only content that is fenced
+ * keeps them". `collapseSpaces` squeezes the runs *inside* a line and deliberately
+ * keeps the indent, because a Markdown indent is structure. So every line kept its
+ * leading padding: 4.7k-9.9k characters per real paper, and worse, an indent of
+ * four or more reads to `isBlockStart` as an indented code block, which stopped
+ * `unwrap` joining anything at all.
+ *
+ * `flattenIndents` in `pdf-preformat.ts` is what actually removes it, after the
+ * grid pass has read the alignment it needs.
  */
 function layOut(items: TextItem[], origin: number, charWidth: number): string {
   let out = '';
@@ -410,20 +419,29 @@ export function suppressRunningText(pages: PageLines[]): number {
   const withText = pages.filter((page) => page.lines.length > 0);
   if (withText.length < MIN_PAGES) return 0;
 
-  const seen = new Map<string, PageLines[]>();
+  // A `Set` per key, not a list: what makes a line furniture is appearing on
+  // most *pages*, and a list counts appearances instead. Three identical margin
+  // lines on one page of a four-page document cleared `REPEAT_SHARE` on their
+  // own — and because that page was then in the list three times, `slice(1)`
+  // still contained it and the filter took every copy, including the first one
+  // this function exists to keep. Insertion order follows `withText`, so the
+  // first element is still the earliest page.
+  const seen = new Map<string, Set<PageLines>>();
   for (const page of withText) {
     const margin = page.height * MARGIN_SHARE;
     for (const line of page.lines) {
       if (line.y > margin && line.y < page.height - margin) continue;
       const key = furnitureKey(line);
-      seen.set(key, [...(seen.get(key) ?? []), page]);
+      const pages = seen.get(key);
+      if (pages) pages.add(page);
+      else seen.set(key, new Set([page]));
     }
   }
 
   let suppressed = 0;
   for (const [key, appearances] of seen) {
-    if (appearances.length < withText.length * REPEAT_SHARE) continue;
-    for (const page of appearances.slice(1)) {
+    if (appearances.size < withText.length * REPEAT_SHARE) continue;
+    for (const page of [...appearances].slice(1)) {
       const before = page.lines.length;
       page.lines = page.lines.filter((line) => furnitureKey(line) !== key);
       suppressed += before - page.lines.length;

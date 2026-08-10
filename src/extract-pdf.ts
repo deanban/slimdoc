@@ -17,7 +17,7 @@ import {
   type PageLines,
   type TextItem,
 } from './pdf-layout.js';
-import { preserveGridRegions } from './pdf-preformat.js';
+import { flattenIndents, preserveGridRegions } from './pdf-preformat.js';
 import type { Section, SectionedDoc } from './sections.js';
 import { resolveExtractOptions, type ExtractOptions, type ExtractOverrides } from './types.js';
 import { selectPages } from './utils/ranges.js';
@@ -136,7 +136,9 @@ function sectionsFrom(pages: PageLines[], opts: ExtractOptions): { sections: Sec
     const joined = opts.dehyphenate ? dehyphenate(body) : body;
     const preserved = opts.preserveTables ? preserveGridRegions(joined) : { text: joined, regions: 0 };
     regions += preserved.regions;
-    return { index: page.index, text: preserved.text };
+    // Last, and deliberately after the grid pass: the alignment is what that pass
+    // reads to find a table, so the indentation cannot go before it has run.
+    return { index: page.index, text: flattenIndents(preserved.text) };
   });
 
   return { sections, regions };
