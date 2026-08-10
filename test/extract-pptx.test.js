@@ -15,8 +15,9 @@ import test from 'node:test';
 
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
-import { chartTable } from '../dist/pptx-charts.js';
+import { chartText } from '../dist/pptx-charts.js';
 import { parseXml } from '../dist/ooxml.js';
+import { localFixture } from './helpers/local.js';
 
 const DECK = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'corpus', 'kitchen-sink.pptx');
 
@@ -259,11 +260,20 @@ test('pptx: a table is separated from its neighbours by a blank line, at every p
  * The series cache is the only place these numbers exist in the package — the
  * chart is drawn from it, and nothing else in the deck repeats them. It is also
  * opt-in: a full series can dwarf the ten tokens of text on the slide it sits on.
+ *
+ * What is *not* opt-in is the chart's writing. A title, an axis label, the
+ * category names and the series names are text the reader sees on the slide, and
+ * the default contract keeps visible text — `--chart-data` was gating the whole
+ * chart part, so a slide whose only content was a titled chart came out empty.
  */
-test('pptx: chart data is absent by default and appears with --chart-data', async () => {
+test('pptx: a chart keeps its writing by default and its numbers on request', async () => {
   const plain = await read();
-  assert.doesNotMatch(plain.text, /Impulse reserve/);
-  assert.doesNotMatch(plain.text, /0\.75/);
+  const slide = plain.doc.sections.find((s) => s.label === 'Propulsion output').text;
+  assert.match(slide, /Propulsion output by quarter/);
+  assert.match(slide, /Q1 2369, Q2 2369, Q3 2369, Q4 2369/);
+  assert.match(slide, /Warp core output \(TD\), Impulse reserve \(TD\)/);
+  assert.doesNotMatch(plain.text, /0\.75/, 'the series numbers are still opt-in');
+  assert.doesNotMatch(slide, /\| --- \|/, 'no table without the numbers to fill it');
 
   const { text } = await read({ chartData: true });
   assert.match(text, /Propulsion output by quarter/);
@@ -276,6 +286,83 @@ test('pptx: a chart lands on the slide it belongs to', async () => {
   const slide = doc.sections.find((s) => s.label === 'Propulsion output');
 
   assert.match(slide.text, /Impulse reserve/);
+});
+
+/**
+ * A chart's numbers come from a cache written when the workbook was last
+ * refreshed, and the workbook itself may not be in the package at all. Nothing
+ * can be done about that but say so — a stale number presented as current is
+ * worse than a number with a caveat.
+ */
+test('pptx: emitted chart numbers say where they came from', async () => {
+  const plain = await read();
+  const { doc } = await read({ chartData: true });
+
+  assert.ok(doc.warnings.some((w) => /cache/.test(w)), doc.warnings.join('; '));
+  assert.ok(!plain.doc.warnings.some((w) => /cache/.test(w)), 'nothing is cached until numbers are');
+});
+
+/**
+ * `idx` is an attribute of a file, which is to say it is whatever the file says.
+ * It was used to index the point array directly, so a 600-byte part claiming
+ * `idx="20000000"` cost a 20-million-element array — a second and a half, half a
+ * gigabyte — and a larger one failed with a raw `RangeError` from deep inside
+ * `Array.from` rather than as a rejected document.
+ */
+test('pptx: a hostile point index costs nothing', () => {
+  const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+  const chartWith = (idx) =>
+    parseXml(
+      `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:barChart><c:ser>` +
+        '<c:cat><c:strRef><c:strCache>' +
+        `<c:pt idx="0"><c:v>Impulse</c:v></c:pt><c:pt idx="${idx}"><c:v>Warp</c:v></c:pt>` +
+        '</c:strCache></c:strRef></c:cat>' +
+        '<c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>7</c:v></c:pt></c:numCache></c:numRef></c:val>' +
+        '</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>',
+    );
+
+  for (const idx of ['20000000', '200000000', '-3', 'nonsense']) {
+    const started = process.hrtime.bigint();
+    const { text, notes } = chartText(chartWith(idx), { values: true });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+
+    assert.ok(ms < 100, `idx="${idx}" took ${ms.toFixed(0)}ms`);
+    assert.match(text, /Impulse/, `idx="${idx}" lost the points that were real`);
+    assert.doesNotMatch(text, /Warp/, `idx="${idx}" was indexed anyway`);
+    assert.ok(notes.some((n) => /point/.test(n)), `idx="${idx}": ${notes.join('; ')}`);
+  }
+});
+
+/** An unnamed series is `Series 1`, because it is the first one and not the zeroth. */
+test('pptx: an unnamed series is numbered the way a reader counts', () => {
+  const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+  const chart = parseXml(
+    `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:barChart><c:ser>` +
+      '<c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Impulse</c:v></c:pt></c:strCache></c:strRef></c:cat>' +
+      '<c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>7</c:v></c:pt></c:numCache></c:numRef></c:val>' +
+      '</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>',
+  );
+
+  assert.match(chartText(chart, { values: true }).text, /\| Series 1 \|/);
+});
+
+/**
+ * The real deck. Its four charts carry their subject in the title and nowhere
+ * else on the slide: with charts gated behind `--chart-data`, `Accuracy Score
+ * (%)` and `Average Latency (seconds)` were absent from the extraction of a deck
+ * that is largely about accuracy and latency.
+ */
+test('pptx: a real deck keeps the writing on its charts', async (t) => {
+  const file = localFixture('deck-mixed', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file);
+  const text = doc.sections.map((s) => s.text).join('\n');
+
+  assert.match(text, /Accuracy Score \(%\)/);
+  assert.match(text, /Average Latency \(seconds\)/);
+  assert.match(text, /Baseline \(before fixes\)/, 'the series names went too');
+  assert.doesNotMatch(text, /15\.9/, 'the numbers are still opt-in');
 });
 
 /**
@@ -293,7 +380,7 @@ test('pptx: a chart shape slimdoc does not understand is skipped, not misread', 
       '</c:ser></c:scatterChart></c:plotArea></c:chart></c:chartSpace>',
   );
 
-  const { text, skipped } = chartTable(scatter);
+  const { text, skipped } = chartText(scatter, { values: true });
   assert.equal(text, '');
   assert.match(skipped, /scatter, bubble/);
 });

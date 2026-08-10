@@ -111,8 +111,10 @@ slimdoc deck.pptx --stats            # a token count per slide
 the `.pptx` — a reordered deck reports the order you present it in. Hidden slides,
 text boxes dragged off the canvas, and the "Click to edit Master title style" chrome
 that lives on the layout are all left out; `--hidden` brings the first two back. Tables
-become Markdown tables, SmartArt becomes a nested list, and `--chart-data` emits a
-chart's series as a table — those numbers usually exist nowhere else in the file.
+become Markdown tables and SmartArt becomes a nested list. A chart contributes its
+writing — title, axis titles, category and series names — because that is text on the
+slide; `--chart-data` adds its series as a table, and those numbers usually exist
+nowhere else in the file.
 
 **PDF.** A PDF has no paragraphs, no reading order and no tables in it — only glyph runs
 at coordinates — so everything slimdoc emits from one is reconstructed, and it says so
@@ -203,7 +205,7 @@ Documents
       --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
       --section-headings  emit `## Page 3` / `## Slide 3 — Title` markers
       --hidden            include hidden slides and off-slide text
-      --chart-data        emit PPTX chart series as tables
+      --chart-data        add PPTX chart series numbers as tables
       --no-diagram-text   skip SmartArt text
       --dehyphenate       rejoin words split across PDF line breaks
       --no-tables         do not preserve aligned PDF regions as code blocks

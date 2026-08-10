@@ -422,11 +422,18 @@ vertically merged cell (`rowSpan`/`vMerge`) repeats down the spanned rows; and t
 document warns `N merged cells flattened` so the user knows an association was
 approximated.
 
-**Charts** (opt-in): `<p:graphicFrame>` → `<c:chart r:id>` → `charts/chartN.xml`. Scope
-is deliberately narrow: **category/value charts only** (`<c:cat>` + `<c:val>`). Scatter,
-bubble and multi-level category charts use different structures and are skipped with a
-warning rather than misread. Chart caches can be stale or the data externally linked
-(`<c:extLst>`); emit what is cached and say so. Cap series and points.
+**Charts** (writing by default, numbers opt-in): `<p:graphicFrame>` → `<c:chart r:id>` →
+`charts/chartN.xml`. The split follows the default output contract exactly: a chart's
+title, axis titles, category names and series names are *visible text on the slide* and
+are emitted by default; only the series values are gated behind `--chart-data`, which is
+what "full chart series … are opt-in" means. Gating the part itself extracts a slide
+that is a heading and a chart as a heading.
+
+Scope is deliberately narrow: **category/value charts only** (`<c:cat>` + `<c:val>`).
+Scatter, bubble and multi-level category charts use different structures and are skipped
+with a warning rather than misread. Chart caches can be stale or the data externally
+linked (`<c:extLst>`); emit what is cached and say so. Cap series and points — and bound
+`<c:pt idx>` *before* it reaches an array, since it is a number the file chooses.
 
 **SmartArt**: `<dgm:relIds>` → `diagrams/dataN.xml`. `<dgm:pt>` carries text;
 `<dgm:cxn type="parentOf">` gives hierarchy. Skip `type="pres"` points — layout
@@ -536,7 +543,7 @@ looksLikeXlsx(buf)   // zip containing 'xl/workbook.xml' -> named refusal
 Documents
       --pages <range>         3-7,12 — pages (PDF) or slides (PPTX)
       --section-headings      emit `## Page 3` / `## Slide 3 — Title` markers
-      --chart-data            emit PPTX chart series as tables
+      --chart-data            add PPTX chart series numbers as tables
       --hidden                include hidden slides and off-slide text
       --dehyphenate           rejoin words split across PDF line breaks
       --no-tables             skip PDF table inference

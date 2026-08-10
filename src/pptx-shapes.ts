@@ -9,7 +9,7 @@
 
 import { child, children, descendants, type XmlNode } from './ooxml.js';
 import { meaningfulAlt } from './extract-html.js';
-import { chartTable } from './pptx-charts.js';
+import { chartText } from './pptx-charts.js';
 import { diagramList } from './pptx-diagrams.js';
 import { renderTable } from './utils/markdown-table.js';
 
@@ -213,6 +213,8 @@ export interface ShapeOutput {
   title?: string;
   /** Charts recognised but out of scope, with the reason for each. */
   skippedCharts: string[];
+  /** What a chart's own values need said about them: staleness, caps, bad indices. */
+  chartNotes: string[];
 }
 
 const NON_VISUAL = ['nvSpPr', 'nvPicPr', 'nvGraphicFramePr'];
@@ -300,11 +302,16 @@ function serialiseFrame(frame: XmlNode, ctx: SlideContext, out: ShapeOutput): vo
     return;
   }
 
-  const chart = ctx.chartData ? descendants(frame, 'c', 'chart')[0] : undefined;
+  // Read whatever the flag: `--chart-data` decides whether the *numbers* are
+  // worth their tokens, not whether the chart's title and labels are visible
+  // text. Gating the part itself left a slide that is a heading and a chart
+  // extracting as a heading.
+  const chart = descendants(frame, 'c', 'chart')[0];
   const chartPart = chart && ctx.part(chart.attrs['r:id'] ?? '');
   if (chartPart) {
-    const { text, skipped } = chartTable(chartPart);
+    const { text, skipped, notes } = chartText(chartPart, { values: ctx.chartData });
     if (skipped !== undefined) out.skippedCharts.push(skipped);
+    out.chartNotes.push(...notes);
     if (text !== '') out.blocks.push(text);
     return;
   }
@@ -328,7 +335,7 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
   candidates.sort(compare);
 
   const out: ShapeOutput = {
-    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [],
+    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [], chartNotes: [],
   };
 
   for (const { node, rank } of candidates) {

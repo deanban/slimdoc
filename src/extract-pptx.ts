@@ -92,6 +92,7 @@ function addTotals(into: ShapeOutput, one: ShapeOutput): void {
   into.captionedImages += one.captionedImages;
   into.mergedCells += one.mergedCells;
   into.skippedCharts.push(...one.skippedCharts);
+  into.chartNotes.push(...one.chartNotes);
 }
 
 function warningsFor(totals: ShapeOutput, hidden: number, dropped: number): string[] {
@@ -104,6 +105,7 @@ function warningsFor(totals: ShapeOutput, hidden: number, dropped: number): stri
   for (const reason of new Set(totals.skippedCharts)) {
     warnings.push(`skipped a chart because ${reason}`);
   }
+  warnings.push(...new Set(totals.chartNotes));
   if (hidden > 0) {
     warnings.push(`skipped ${hidden} hidden slide${hidden === 1 ? '' : 's'} — use --hidden to include them`);
   }
@@ -130,7 +132,7 @@ export function extractPptx(
 
   const slide = slideSize(presentation);
   const totals: ShapeOutput = {
-    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [],
+    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [], chartNotes: [],
   };
   const sections: Section[] = [];
 
