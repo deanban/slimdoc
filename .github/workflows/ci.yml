@@ -81,3 +81,62 @@ jobs:
             assert.match(clean('a    b\n\n\n\nc'), /a b/);
             console.log('package entry point OK');
           "
+
+  # Merging a PR that does not touch package.json's version is a silent no-op in
+  # release.yml: the check job passes, the publish job is skipped, and nothing
+  # says so until someone goes looking for the missing release. This job answers
+  # "will merging this publish?" on the PR itself.
+  #
+  # The registry comparison is deliberately identical to release.yml's, so a
+  # green preview and a skipped publish can never disagree. It never fails the
+  # build; not releasing is a normal outcome for most PRs.
+  release-preview:
+    name: release preview
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Report what merging this PR would publish
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+
+          if npm view "$name@$version" version > /dev/null 2>&1; then
+            echo "::notice title=No release::package.json is still at $version, which is already on npm. Merging this PR will not publish."
+            {
+              echo "### No release"
+              echo
+              echo "\`package.json\` is at **$version**, which npm already has."
+              echo "Merging this PR publishes nothing, and npmjs.com keeps showing the README and files from the current release."
+              echo
+              echo "Bump the version in a PR to main when you want these changes on npm."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # release.yml hard-fails on this rather than publishing, so surface it
+          # here while it is still cheap to fix.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1; then
+            echo "::error title=Release will fail::$tag already exists as a git tag but $version is not on npm. release.yml will fail on merge."
+            {
+              echo "### Release will fail"
+              echo
+              echo "Tag \`$tag\` exists, but **$version** is not on npm."
+              echo "\`release.yml\` treats that as a failed earlier release and refuses to publish. Delete the tag or bump to the next version."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "::notice title=Will publish $version::Merging this PR publishes $name@$version to npm and tags $tag."
+          {
+            echo "### Will publish $version"
+            echo
+            echo "Merging this PR publishes **$name@$version** to npm, tags \`$tag\`, and opens a GitHub Release."
+          } >> "$GITHUB_STEP_SUMMARY"
