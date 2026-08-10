@@ -490,6 +490,58 @@ test('pdf: prose and indented code are not mistaken for a grid', async () => {
   assert.match(text, /^ {4}total = 0$/m);
 });
 
+/**
+ * Two fields separated by two spaces is not a grid — it is what justified
+ * setting produces on every line, once the character grid has turned the widened
+ * interword spaces into runs of them. Counting fields alone therefore fenced
+ * paragraphs of ordinary prose, and fenced content is exempt from cleaning, so a
+ * false positive costs twice: the alignment is preserved and the unwrapping is
+ * not done.
+ *
+ * What a table has and justified prose does not is a column: field starts that
+ * land in the same place row after row.
+ */
+test('grid: fields that do not line up are prose, however many there are', () => {
+  const justified = [
+    'inference,  since the file records  only where ink is placed',
+    'and never  what any of it means  to a reader who encounters',
+    'it in sequence.  Justified setting widens  the interword spaces',
+  ].join('\n');
+
+  assert.equal(preserveGridRegions(justified).regions, 0, preserveGridRegions(justified).text);
+
+  const table = [
+    'Subsystem     Owner       Status',
+    'Warp core     La Forge    Green',
+    'Deflector     Barclay     Amber',
+  ].join('\n');
+  assert.equal(preserveGridRegions(table).regions, 1);
+});
+
+/** A column that jitters by a character is still a column. */
+test('grid: a column survives a character of drift', () => {
+  const rows = ['Deck 36    12', 'Deck 4     7', 'Deck 1      31'].join('\n');
+  assert.equal(preserveGridRegions(rows).regions, 1, preserveGridRegions(rows).text);
+});
+
+/**
+ * The paper this was found on: eight pages of two-column figures and justified
+ * body text, which produced 25 fenced blocks holding whole paragraphs of prose.
+ */
+test('pdf: a paper full of figures is not mostly fenced', async (t) => {
+  const file = localFixture('paper-figures', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file, { pages: [[1, 8]] });
+  const { text } = cleanDocument(doc, { preset: 'balanced' }, {});
+  const fenced = text.match(/```\n[\s\S]*?\n```/g) ?? [];
+
+  assert.ok(fenced.length < 12, `${fenced.length} fenced blocks over 8 pages`);
+  for (const block of fenced) {
+    assert.doesNotMatch(block, /we propose a/, `a paragraph of prose was fenced:\n${block}`);
+  }
+});
+
 // --------------------------------------------------------------------------
 // resource limits
 // --------------------------------------------------------------------------

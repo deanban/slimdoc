@@ -22,11 +22,50 @@ const MIN_ROWS = 3;
 const FIELD_GAP = /\s{2,}/;
 /** A row has to hold at least this many fields to be part of a grid. */
 const MIN_FIELDS = 2;
+/** A column start may drift this far between rows and still be one column. */
+const DRIFT = 2;
+/** …and has to appear in this share of the run's rows to be a column at all. */
+const ALIGNED_SHARE = 0.7;
 
 function isGridRow(line: string): boolean {
   const trimmed = line.trim();
   if (trimmed === '') return false;
   return trimmed.split(FIELD_GAP).length >= MIN_FIELDS;
+}
+
+/** Where each field after the first begins, in characters from the left. */
+function fieldStarts(line: string): number[] {
+  const starts: number[] = [];
+  for (const gap of line.matchAll(/\S {2,}(?=\S)/g)) {
+    starts.push((gap.index ?? 0) + gap[0].length);
+  }
+  return starts;
+}
+
+/**
+ * Whether a run of candidate rows is a grid rather than a paragraph.
+ *
+ * Two fields separated by two spaces is not evidence of anything: justified
+ * setting widens every interword space, and the character grid these lines are
+ * laid out on turns that into runs of two and three. Counting fields alone
+ * therefore fenced ordinary prose — 25 blocks over eight pages of one real
+ * paper, several of them whole paragraphs — and fenced content is exempt from
+ * cleaning, so each false positive costs twice: the spacing is preserved *and*
+ * the unwrapping is skipped.
+ *
+ * What a table has and prose does not is a column: a place where field after
+ * field begins, row after row. A character of drift is allowed, because the
+ * grid is derived from coordinates and rounds.
+ */
+function isGrid(rows: string[]): boolean {
+  const starts = rows.map(fieldStarts);
+  const needed = rows.length * ALIGNED_SHARE;
+
+  for (const column of new Set(starts.flat())) {
+    const rowsHere = starts.filter((row) => row.some((at) => Math.abs(at - column) <= DRIFT));
+    if (rowsHere.length >= needed) return true;
+  }
+  return false;
 }
 
 export interface Preformatted {
@@ -49,7 +88,7 @@ export function preserveGridRegions(text: string): Preformatted {
   let regions = 0;
 
   const flush = (): void => {
-    if (run.length >= MIN_ROWS) {
+    if (run.length >= MIN_ROWS && isGrid(run)) {
       regions += 1;
       // A block needs a blank line on either side, or the fence welds onto the
       // paragraph above it and stops being a fence at all.
