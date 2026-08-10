@@ -37,6 +37,8 @@ const MIN_GUTTER = 18;
 const CLEAR_SHARE = 0.8;
 /** …and has to have this many whole lines on each side of it. */
 const MIN_COLUMN_LINES = 3;
+/** A column of prose sets lines about this long; a column of table cells does not. */
+const MIN_COLUMN_CHARS = 20;
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -152,11 +154,21 @@ interface Gutter {
  * usually share their baselines: on the fixture's two-column spread every body
  * line holds one run from each column, so a line-level view sees no gap at all.
  *
- * The decisive guard is that there must be *exactly one* candidate band. A
- * table produces one clear band per column boundary, and reading a five-column
- * table as two columns of prose would be far worse than leaving a two-column
- * page interleaved — so anything with more than one band is not a column
- * layout, and is left alone.
+ * Two guards, and between them they are the whole of the judgement.
+ *
+ * There must be *exactly one* candidate band. A table of three or more columns
+ * produces one clear band per boundary, and reading a five-column table as two
+ * columns of prose would be far worse than leaving a two-column page
+ * interleaved — so more than one band is not a column layout.
+ *
+ * And both sides must read like prose. The one-band rule alone was inverted for
+ * the commonest table in any report: a *two*-column table produces exactly one
+ * band, so it was the single shape that guard admitted, and every value was
+ * separated from the row it belongs to — silently, since the result still reads
+ * as clean prose. What separates the two cases is line length, not geometry. A
+ * column of prose sets lines of roughly 40 characters on a letter page; a column
+ * of table cells sets two or six. Both real two-column documents measured here
+ * sit at 37-40 on each side, and a real table at 6 and 2.
  */
 function findGutter(rows: TextItem[][]): Gutter | undefined {
   if (rows.length < MIN_COLUMN_LINES) return undefined;
@@ -170,12 +182,22 @@ function findGutter(rows: TextItem[][]): Gutter | undefined {
     const band = { start: edges[i] as number, end: edges[i + 1] as number };
     if (band.end - band.start < MIN_GUTTER) continue;
     if (rows.filter((row) => crosses(row, band)).length > allowed) continue;
-    if (rows.filter((row) => row.some((it) => it.x + it.width <= band.start)).length < MIN_COLUMN_LINES) continue;
-    if (rows.filter((row) => row.some((it) => it.x >= band.end)).length < MIN_COLUMN_LINES) continue;
+    if (!readsAsColumn(rows, (it) => it.x + it.width <= band.start)) continue;
+    if (!readsAsColumn(rows, (it) => it.x >= band.end)) continue;
     bands.push(band);
   }
 
   return bands.length === 1 ? bands[0] : undefined;
+}
+
+/** One side of a candidate band: enough lines, and lines long enough to be prose. */
+function readsAsColumn(rows: TextItem[][], onThisSide: (item: TextItem) => boolean): boolean {
+  const lengths: number[] = [];
+  for (const row of rows) {
+    const side = row.filter(onThisSide);
+    if (side.length > 0) lengths.push(side.reduce((n, it) => n + it.str.length, 0));
+  }
+  return lengths.length >= MIN_COLUMN_LINES && median(lengths) >= MIN_COLUMN_CHARS;
 }
 
 function crosses(row: TextItem[], band: Gutter): boolean {

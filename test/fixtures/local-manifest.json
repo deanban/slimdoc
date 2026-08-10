@@ -37,11 +37,18 @@
       "proves": "Slide numbering must be stable across --hidden: --pages 6 and '## Slide 6' have to mean the same slide either way, and the same slide PowerPoint numbers 6."
     },
     {
-      "name": "paper-2col",
-      "file": "paper-2col.pdf",
+      "name": "paper-single",
+      "file": "paper-single.pdf",
       "sha256": "431d0c39365b4c46b43162371fa15b3dcf8d142b377d642b3e5925dc81f3487b",
-      "description": "A two-column academic paper with a running title, numbered pages and body text set ragged-right.",
-      "proves": "Genuine two-column reading order must keep working — this is the regression guard for the two-column-table fix, which narrows the same code path."
+      "description": "A single-column academic paper, 38 pages, with a running title repeated on every page and body text set ragged-right.",
+      "proves": "Running-header suppression and paragraph detection on a document a typesetter laid out. Unwrap does fire here (311 lines to 166), which makes it the guard that the unwrap threshold change does not over-join."
+    },
+    {
+      "name": "paper-ocr-columns",
+      "file": "paper-ocr-columns.pdf",
+      "sha256": "299446a9582b996f0dab35e63e1432f7ff018347f51b885cfa572f73123b57e7",
+      "description": "An OCR'd two-column trade journal — genuinely two columns, with the scanning artefacts that come with it.",
+      "proves": "Real two-column reading order must keep working when column detection is narrowed to exclude tables. Also the document that showed the fixed 12% margin band swallowing the first six body lines of every page, which then escape column ordering and come out interleaved."
     },
     {
       "name": "paper-figures",

@@ -17,8 +17,18 @@ import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
 import { toLines, layoutPage } from '../dist/pdf-layout.js';
 import { preserveGridRegions } from '../dist/pdf-preformat.js';
+import { localFixture } from './helpers/local.js';
 
-const PDF = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'corpus', 'kitchen-sink.pdf');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PDF = join(HERE, 'fixtures', 'corpus', 'kitchen-sink.pdf');
+
+/**
+ * Layouts a typesetter chose rather than we did. The corpus generator places
+ * every run at a coordinate we picked, so it cannot contradict an assumption we
+ * hold; reportlab computes its own leading, justification and column widths.
+ */
+const TABLE_PDF = join(HERE, 'fixtures', 'generated', 'two-column-table.pdf');
+const PROSE_PDF = join(HERE, 'fixtures', 'generated', 'justified-prose.pdf');
 
 async function read(extract = {}, cleanOpts = { preset: 'balanced' }) {
   const doc = await extractFromFile(PDF, extract);
@@ -75,6 +85,56 @@ test('pdf: a two-column spread is read down one column and then the other', asyn
   assert.ok(at(text, 'reproduced here') < at(text, 'Warp core recertification'));
   assert.ok(at(text, 'Warp core recertification') < at(text, 'recorded as unusual'));
   assert.doesNotMatch(text, /stardate Warp core recertification/);
+});
+
+/**
+ * A two-column table, laid out by reportlab rather than by us.
+ *
+ * `findGutter` refuses to call a page two-column when it finds more than one
+ * clear vertical band, reasoning that a table produces one band per column
+ * boundary. A two-column table produces exactly one — the single case that guard
+ * admits — so the commonest table shape in a report was read as two columns of
+ * prose, and every value was separated from the row it belongs to.
+ *
+ * The damage is invisible in the output: the result reads as clean prose, so a
+ * model consuming it associates the numbers with nothing and says so
+ * confidently. That is the same failure `pdf-preformat.ts` refuses to risk by
+ * emitting pipe tables, arriving one stage earlier.
+ */
+test('pdf: a two-column table keeps each value with its row', async () => {
+  const doc = await extractFromFile(TABLE_PDF);
+  const text = doc.sections.map((s) => s.text).join('\n');
+
+  for (const [deck, crew] of [['Deck', 'Crew'], ['Deck 36', '12'], ['Deck 4', '7'], ['Deck 1', '31']]) {
+    assert.match(
+      text,
+      new RegExp(`^\\s*${deck}\\s+${crew}\\s*$`, 'm'),
+      `"${deck}" lost its value "${crew}":\n${text}`,
+    );
+  }
+  // Read as columns instead, the page becomes every label and then every value,
+  // so no line holds a deck and its crew and the last label precedes the first
+  // number. Alignment is what the fenced region then preserves.
+  assert.ok(at(text, 'Deck 1\n') > at(text, '12'), 'labels and values were split into columns');
+});
+
+/**
+ * The other side of the same narrowing. Requiring both columns to read as prose
+ * must not stop a document that really is two columns from being read as two —
+ * so this asserts against a real one, where the column widths, the line lengths
+ * and the OCR noise are all somebody else's.
+ */
+test('pdf: a real two-column document is still read column by column', async (t) => {
+  const file = localFixture('paper-ocr-columns', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file, { pages: [[4, 4]] });
+  const text = doc.sections[0].text;
+
+  // Two consecutive lines of the left column. Interleaved, each would carry the
+  // right column's text after it and neither would appear on a line of its own.
+  assert.match(text, /^\s*quality {2}products {2}with {2}the {2}thujone {2}note {2}can {2}re-\s*$/m, text.slice(0, 400));
+  assert.match(text, /^\s*place {2}the very costfy {2}thujone\./m);
 });
 
 test('pdf: a single-column page keeps its order', async () => {
