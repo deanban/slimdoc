@@ -1,6 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
 import { extname } from 'node:path';
-import mammoth from 'mammoth';
 
 import { resolveExtractOptions } from './types.js';
 import type { ExtractOverrides, ExtractedDoc, Limits, SourceFormat } from './types.js';
@@ -50,7 +49,17 @@ interface MammothApi {
   ): Promise<MammothResult>;
   images: { imgElement(f: (image: MammothImage) => Promise<Record<string, string>>): unknown };
 }
-const mammothApi = mammoth as unknown as MammothApi;
+/**
+ * Loaded on first use, not on import.
+ *
+ * `require('mammoth')` is 43ms of a ~120ms `slimdoc notes.md` run — a third of
+ * the process spent building a Word reader for a file that is not Word. All
+ * three heavy dependencies are lazy for the same reason: a Markdown or text run
+ * must load none of them.
+ */
+async function loadMammoth(): Promise<MammothApi> {
+  return (await import('mammoth')).default as unknown as MammothApi;
+}
 
 // --------------------------------------------------------------------------
 // Detection
@@ -245,6 +254,7 @@ async function extractDocx(buf: Buffer, source: string): Promise<ExtractedDoc> {
   // base64-encodes every embedded image into the output — on a real Teams
   // transcript export that is ~99% of the resulting characters. This handler
   // never touches the bytes, so they are never stringified at all.
+  const mammothApi = await loadMammoth();
   const convertImage = mammothApi.images.imgElement(async (image: MammothImage) => {
     images += 1;
     const alt = meaningfulAlt(image.altText);

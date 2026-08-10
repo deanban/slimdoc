@@ -527,3 +527,33 @@ test('limits: a file too large to read is refused by size, not by failing to rea
     },
   );
 });
+
+/**
+ * The three heavy dependencies are all lazy, and this is the one that had
+ * stopped being so: `import mammoth from 'mammoth'` at the top of `extract.ts`
+ * built a Word reader on every run, including the runs that read a Markdown
+ * file. Measured at 43ms of a ~120ms `slimdoc notes.md`, or a third of the
+ * process.
+ *
+ * Asserted against the module graph rather than a stopwatch, since a timing
+ * assertion measures the machine.
+ */
+test('deps: reading a Markdown file does not load the Word reader', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const entry = join(FIXTURES, '..', '..', 'dist', 'extract.js');
+
+  const probe = (file) => [
+    "import { createRequire } from 'node:module';",
+    `import { extractFromFile } from ${JSON.stringify(entry)};`,
+    `await extractFromFile(${JSON.stringify(file)});`,
+    'const cache = createRequire(import.meta.url).cache;',
+    "console.log(Object.keys(cache).filter((p) => p.includes('mammoth')).length);",
+  ].join('\n');
+
+  const run = async (file) =>
+    (await promisify(execFile)(process.execPath, ['--input-type=module', '-e', probe(file)])).stdout.trim();
+
+  assert.equal(await run(fixture('messy.md')), '0', 'a Markdown run loaded the Word reader');
+  assert.notEqual(await run(fixture('sample.docx')), '0', 'the probe cannot see the Word reader at all');
+});
