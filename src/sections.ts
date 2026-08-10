@@ -13,6 +13,7 @@ import { computeStats, estimateTokens } from './tokens.js';
 import { resolveExtractOptions } from './types.js';
 import type {
   CleanOptions,
+  ExtractOptions,
   ExtractOverrides,
   ExtractedDoc,
   SourceFormat,
@@ -35,6 +36,13 @@ export interface Section {
  */
 export interface SectionedDoc extends ExtractedDoc {
   sections?: Section[];
+  /**
+   * The options the extraction actually ran under. Cleaning is where section
+   * headings are emitted, so without this a caller had to pass the same options
+   * to `extractFromFile` and to `cleanDocument` for either to be honoured — and
+   * passing them only to the extractor silently did nothing.
+   */
+  options?: ExtractOptions;
 }
 
 export interface SectionStats {
@@ -81,18 +89,22 @@ export function cleanDocument(
     return { text: cleaned, stats: computeStats(doc.text, cleaned), sections: [] };
   }
 
-  const { sectionHeadings } = resolveExtractOptions(extractOptions);
+  const { sectionHeadings } = resolveExtractOptions(extractOptions ?? doc.options);
   const parts: string[] = [];
   const stats: SectionStats[] = [];
 
   for (const section of sections) {
     const text = clean(bodyOf(section, doc.format, sectionHeadings), cleanOptions);
     if (text === '') continue;
+    // The newline that will join this section to the one before it is counted
+    // here, so the per-section figures `--stats` prints add up to the document
+    // the user is looking at rather than falling short by one per join.
+    const joiner = parts.length === 0 ? 0 : 1;
     parts.push(text);
     stats.push({
       index: section.index,
       ...(section.label === undefined ? {} : { label: section.label }),
-      chars: text.length,
+      chars: text.length + joiner,
       tokens: estimateTokens(text),
     });
   }

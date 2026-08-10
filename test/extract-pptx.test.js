@@ -59,11 +59,6 @@ test('pptx: presentation order comes from sldIdLst, not from the file names', as
   );
 });
 
-test('pptx: sections are numbered as the reader sees them', async () => {
-  const { doc } = await read();
-  assert.deepEqual(doc.sections.map((s) => s.index), [1, 2, 3, 4, 5, 6, 7, 8]);
-});
-
 test('pptx: --pages selects slides by presentation position', async () => {
   const { doc } = await read({ pages: [[2, 3]] });
 
@@ -598,6 +593,77 @@ test('pptx: hMerge="true" is a merge, not a cell with text of its own', () => {
 });
 
 // --------------------------------------------------------------------------
+// counting and geometry
+// --------------------------------------------------------------------------
+
+/**
+ * A slide with no `<p:spTree>` contributed the running totals *back into
+ * themselves* as its own result, so every image, merged cell and chart counted
+ * so far was added a second time. The warning a user reads to decide whether
+ * anything was lost then reported twice what the deck contains.
+ */
+test('pptx: a slide with no shape tree adds nothing to the counts', () => {
+  const picture =
+    '<p:pic><p:nvPicPr><p:cNvPr id="4" name="Picture 4" descr="Nacelle 2, post-teardown"/></p:nvPicPr>' +
+    '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100000" cy="100000"/></a:xfrm></p:spPr></p:pic>';
+  const empty = '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld/></p:sld>';
+
+  const one = extractPptx(deckOf([slideXml(picture)]), 'deck.pptx');
+  const two = extractPptx(deckOf([slideXml(picture), empty]), 'deck.pptx');
+
+  assert.ok(one.warnings.some((w) => /dropped 1 embedded image/.test(w)), one.warnings.join('; '));
+  assert.deepEqual(two.warnings, one.warnings, 'an empty slide changed the counts');
+});
+
+/**
+ * `<a:ext>` is optional, and its absence means the extent is unknown — not that
+ * it is zero. Read as zero, a shape sitting flush against the left or top edge
+ * has its far corner at exactly 0, which the off-canvas test read as "entirely
+ * off the slide", and the shape was dropped as invisible content. Flush to the
+ * edge is where a banner heading goes.
+ */
+test('pptx: a shape at the origin with no extent is on the slide', () => {
+  const shape =
+    '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Banner"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
+    '<p:spPr><a:xfrm><a:off x="0" y="0"/></a:xfrm></p:spPr>' +
+    '<p:txBody><a:bodyPr/><a:p><a:r><a:t>Flush to the top left</a:t></a:r></a:p></p:txBody></p:sp>';
+
+  const doc = extractPptx(deckOf([slideXml(shape)]), 'deck.pptx');
+  assert.match(doc.text, /Flush to the top left/);
+});
+
+/**
+ * A hidden slide is skipped, and it is still slide 6. Numbering the *included*
+ * slides instead meant `--pages 6` and `## Slide 6` named different slides
+ * depending on `--hidden`, and neither matched the number PowerPoint puts on the
+ * slide — so a page reference taken from the output could not be used to ask for
+ * that page again.
+ */
+test('pptx: slides are numbered as PowerPoint numbers them, hidden ones included', async () => {
+  const plain = await read();
+  const shown = await read({ hiddenContent: true });
+
+  assert.deepEqual(plain.doc.sections.map((s) => s.index), [1, 2, 3, 4, 5, 7, 8, 9]);
+  assert.deepEqual(shown.doc.sections.map((s) => s.index), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.equal(plain.doc.sections.find((s) => s.index === 7).label, 'Refit sequence');
+});
+
+test('pptx: --pages names the same slide with and without --hidden', async () => {
+  const plain = await read({ pages: [[7, 7]] });
+  const shown = await read({ pages: [[7, 7]], hiddenContent: true });
+
+  assert.deepEqual(plain.doc.sections.map((s) => s.label), ['Refit sequence']);
+  assert.deepEqual(shown.doc.sections.map((s) => s.label), ['Refit sequence']);
+});
+
+test('pptx: asking only for a hidden slide returns nothing, and says why', async () => {
+  const { doc } = await read({ pages: [[6, 6]] });
+
+  assert.deepEqual(doc.sections, []);
+  assert.ok(doc.warnings.some((w) => /1 hidden slide/.test(w)), doc.warnings.join('; '));
+});
+
+// --------------------------------------------------------------------------
 // bounded work
 // --------------------------------------------------------------------------
 
@@ -656,7 +722,10 @@ test('pptx: section headings name the slide', async () => {
   const { text } = await read({ sectionHeadings: true }, { preset: 'safe' });
 
   assert.match(text, /^## Slide 1 — Refit Status — USS Enterprise$/m);
-  assert.match(text, /^## Slide 8 — Runbook$/m);
+  // 9, not 8: slide 6 is hidden and skipped, and the ones after it keep their
+  // own numbers rather than closing the gap.
+  assert.match(text, /^## Slide 9 — Runbook$/m);
+  assert.doesNotMatch(text, /^## Slide 6/m);
 });
 
 test('pptx: extraction is pure — the same file twice gives the same text', async () => {

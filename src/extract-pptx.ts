@@ -162,6 +162,16 @@ function inheritanceFor(entries: Entries, slidePart: string, cache: Map<string, 
   return inherited;
 }
 
+/**
+ * A slide that contributed nothing. Spelled out rather than spread from the
+ * running totals, which is what a `{ ...totals, blocks: [] }` here did: adding
+ * that back into the totals counted every image and merged cell so far a second
+ * time, and the warning a user reads to see what was lost reported double.
+ */
+function emptyOutput(): ShapeOutput {
+  return { blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [], chartNotes: [] };
+}
+
 function addTotals(into: ShapeOutput, one: ShapeOutput): void {
   into.images += one.images;
   into.captionedImages += one.captionedImages;
@@ -201,20 +211,27 @@ export function extractPptx(
     throw new UnsupportedFormatError('is a zip but carries no ppt/presentation.xml', 'pptx');
   }
 
+  // Selection runs over *every* slide, hidden ones included, so a slide keeps
+  // the number PowerPoint gives it. Numbering what survived the filter instead
+  // meant `--pages 6` and `## Slide 6` named different slides depending on
+  // `--hidden`, and a page reference read out of the output could not be used
+  // to ask for that page again.
   const all = slideRefs(entries, presentation, opts.hiddenContent);
-  const included = opts.hiddenContent ? all : all.filter((ref) => !ref.hidden);
-  const selection = selectPages(included.length, opts.pages, opts.limits.maxPages);
+  const selection = selectPages(all.length, opts.pages, opts.limits.maxPages);
 
   const slide = slideSize(presentation);
-  const totals: ShapeOutput = {
-    blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [], chartNotes: [],
-  };
+  const totals = emptyOutput();
   const sections: Section[] = [];
   const inheritance = new Map<string, Inheritance>();
+  let hidden = 0;
 
   for (const page of selection.pages) {
-    const ref = included[page - 1];
+    const ref = all[page - 1];
     if (!ref) continue;
+    if (ref.hidden) {
+      hidden += 1;
+      continue;
+    }
 
     const rels = relsOf(entries, ref.part);
     const ctx: SlideContext = {
@@ -231,7 +248,7 @@ export function extractPptx(
     const root = partOf(entries, ref.part);
     if (!root) continue;
     const tree = child(child(root, 'p', 'cSld') ?? root, 'p', 'spTree');
-    const output = tree ? serialiseSpTree(tree, ctx) : { ...totals, blocks: [] };
+    const output = tree ? serialiseSpTree(tree, ctx) : emptyOutput();
     addTotals(totals, output);
 
     // Shapes are separated by a blank line: `canJoin` refuses to join across
@@ -247,8 +264,9 @@ export function extractPptx(
   return {
     text: sections.map((s) => s.text).join('\n\n'),
     format: 'pptx',
+    options: opts,
     source,
-    warnings: warningsFor(totals, all.length - included.length, selection.dropped),
+    warnings: warningsFor(totals, hidden, selection.dropped),
     sections,
   };
 }

@@ -32,8 +32,10 @@ export interface XmlNode {
   /** Un-namespaced attributes by local name; namespaced ones as `r:id`. */
   attrs: Record<string, string>;
   children: XmlNode[];
-  /** This element's own text, excluding its children's. */
+  /** This element's own text, up to its first child. */
   text: string;
+  /** The text that followed this element inside its parent. */
+  tail: string;
 }
 
 function prefixOf(uri: string): string {
@@ -50,7 +52,7 @@ function toNode(tag: SaxesTagNS): XmlNode {
     if (attr.prefix === 'xmlns' || attr.name === 'xmlns') continue;
     attrs[attributeKey(attr)] = attr.value;
   }
-  return { ns: prefixOf(tag.uri), local: tag.local, attrs, children: [], text: '' };
+  return { ns: prefixOf(tag.uri), local: tag.local, attrs, children: [], text: '', tail: '' };
 }
 
 /**
@@ -79,9 +81,15 @@ export function parseXml(source: string | Buffer): XmlNode {
   parser.on('opentag', (tag) => {
     stack.push(toNode(tag));
   });
+  // Text after a child belongs *after* that child, not appended to everything
+  // the element owns: `one<a:r>two</a:r>three` is three fragments in that order,
+  // and an element that swept them all into one string would read `onethreetwo`.
   const addText = (text: string): void => {
     const top = stack[stack.length - 1];
-    if (top) top.text += text;
+    if (!top) return;
+    const previous = top.children[top.children.length - 1];
+    if (previous) previous.tail += text;
+    else top.text += text;
   };
   parser.on('text', addText);
   parser.on('cdata', addText);
@@ -123,7 +131,7 @@ export function descendants(node: XmlNode, ns: string, local: string): XmlNode[]
 
 /** All text in the subtree, in document order. */
 export function textOf(node: XmlNode): string {
-  return node.children.reduce((text, c) => text + textOf(c), node.text);
+  return node.children.reduce((text, c) => text + textOf(c) + c.tail, node.text);
 }
 
 /** Enough of a part to have reached its document element, in one bite. */

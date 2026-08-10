@@ -341,9 +341,19 @@ function place(box: Box | undefined, transform: Transform): Box | undefined {
   return { ...topLeft, cx: bottomRight.x - topLeft.x, cy: bottomRight.y - topLeft.y };
 }
 
-/** A shape drawn entirely beyond the slide edges is not visible content. */
+/**
+ * A shape drawn entirely beyond the slide edges is not visible content.
+ *
+ * Every comparison is strict, which matters for one case: `<a:ext>` is optional
+ * and its absence means the extent is unknown, not that it is zero. Read as
+ * zero, a shape flush against the left or top edge has its far corner at
+ * exactly 0 — and with `<=` that was "entirely off the slide", so a banner
+ * heading at the origin was dropped as hidden content. A shape that stops
+ * exactly at the edge has nothing visible either way; keeping it costs a line
+ * and losing it costs the line.
+ */
 function offCanvas(box: Box, slide: { cx: number; cy: number }): boolean {
-  return box.x + box.cx <= 0 || box.y + box.cy <= 0 || box.x >= slide.cx || box.y >= slide.cy;
+  return box.x + box.cx < 0 || box.y + box.cy < 0 || box.x > slide.cx || box.y > slide.cy;
 }
 
 const SHAPE_KINDS = new Set(['sp', 'pic', 'graphicFrame']);

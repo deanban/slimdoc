@@ -50,11 +50,25 @@ interface Entry {
   localOffset: number;
 }
 
-/** The end record is the only fixed point in a zip: everything is found from it. */
+/**
+ * The end record is the only fixed point in a zip: everything is found from it.
+ *
+ * It has to be found by scanning backwards for its signature, because the
+ * archive comment that follows it has no length known in advance. Which means
+ * the scan can find those four bytes *inside* the comment — and a comment is
+ * arbitrary bytes, so this is not exotic — and then every offset taken from the
+ * decoy is nonsense and the archive is refused as truncated when nothing about
+ * it is.
+ *
+ * The record itself says how long the comment is, and in a real one that length
+ * runs exactly to the end of the file. Checking it is what tells a record from
+ * a passage that merely looks like one.
+ */
 function findEndRecord(buf: Buffer): number {
   const earliest = Math.max(0, buf.length - MAX_COMMENT - EOCD_SIZE);
   for (let at = buf.length - EOCD_SIZE; at >= earliest; at--) {
-    if (buf.readUInt32LE(at) === EOCD_SIGNATURE) return at;
+    if (buf.readUInt32LE(at) !== EOCD_SIGNATURE) continue;
+    if (buf.readUInt16LE(at + 20) === buf.length - at - EOCD_SIZE) return at;
   }
   return refuse('is not a readable zip archive — no end-of-central-directory record');
 }

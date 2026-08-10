@@ -12,6 +12,7 @@ import test from 'node:test';
 
 import { cleanDocument } from '../dist/sections.js';
 import { cleanWithStats } from '../dist/clean.js';
+import { EXTRACT_DEFAULTS } from '../dist/types.js';
 
 const doc = (sections, format = 'pptx') => ({
   text: sections.map((s) => s.text).join('\n\n'),
@@ -167,4 +168,37 @@ test('sections: document stats measure the extracted text against the join', () 
 
   assert.equal(out.stats.chars.before, DECK.text.length);
   assert.equal(out.stats.chars.after, out.text.length);
+});
+
+/**
+ * `extractFromFile(file, { sectionHeadings: true })` and then
+ * `cleanDocument(doc)` produced no headings: the option was resolved during
+ * extraction and thrown away, and cleaning — where headings are actually
+ * emitted — re-resolved from nothing and got the default back. The caller had
+ * to pass the same options twice for either to be honoured, and nothing said so.
+ *
+ * The document now carries the options its extraction ran under, so cleaning
+ * agrees with extraction by default and an explicit argument still wins.
+ */
+test('sections: the options an extraction ran under reach the cleaner', () => {
+  const withHeadings = { ...DECK, options: { ...EXTRACT_DEFAULTS, sectionHeadings: true } };
+
+  assert.match(cleanDocument(withHeadings).text, /^## Slide 1/m);
+  assert.doesNotMatch(cleanDocument(DECK).text, /^## Slide 1/m);
+  assert.doesNotMatch(
+    cleanDocument(withHeadings, {}, { sectionHeadings: false }).text,
+    /^## Slide 1/m,
+    'an explicit argument must still win',
+  );
+});
+
+/**
+ * `--stats` prints a character count per section, and the sections are joined
+ * with a newline apiece. Counting only each section's own text left the sum
+ * short by one per join, so the per-section figures did not add up to the
+ * document the user is looking at.
+ */
+test('sections: the per-section characters add up to the document', () => {
+  const { text, sections } = cleanDocument(DECK);
+  assert.equal(sections.reduce((total, s) => total + s.chars, 0), text.length);
 });

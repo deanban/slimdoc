@@ -180,6 +180,7 @@ export async function extractPdf(
   return {
     text: sections.map((s) => s.text).join('\n\n'),
     format: 'pdf',
+    options: opts,
     source,
     warnings: warningsFor({ textless, suppressed, dropped: selection.dropped, truncated, regions }),
     sections,

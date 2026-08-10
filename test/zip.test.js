@@ -99,6 +99,26 @@ test('zip: bytes that are not an archive are refused by name', () => {
   assert.throws(() => readZipEntries(Buffer.from('not a zip at all'), limits()), /zip/i);
 });
 
+/**
+ * The end record is found by scanning backwards for its signature, and the
+ * archive comment sits after it — so a comment containing those four bytes is
+ * found first and read as the record. Everything derived from it is then
+ * garbage, and the archive is refused as "truncated central directory" when
+ * nothing about it is truncated.
+ *
+ * The record says how long the comment is, and a real one runs exactly to the
+ * end of the file. That is the check that tells the two apart.
+ */
+test('zip: an archive whose comment contains the end signature is still read', () => {
+  const decoy = Buffer.alloc(22);
+  decoy.writeUInt32LE(0x06054b50, 0);
+  const buf = buildZip([stored('a.xml', '<a/>')], { comment: `padding${decoy.toString('latin1')}padding` });
+
+  const entries = readZipEntries(buf, limits());
+  assert.ok(entries.has('a.xml'), `read the comment as the end record: ${[...entries.keys()]}`);
+  assert.equal(entries.get('a.xml')().toString('utf8'), '<a/>');
+});
+
 test('zip: a ZIP64 archive is refused rather than truncated', () => {
   const buf = buildZip([stored('a.xml', 'hi')], { zip64: true });
   assert.throws(() => readZipEntries(buf, limits()), /zip64/i);

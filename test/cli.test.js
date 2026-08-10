@@ -458,7 +458,7 @@ test('--stats reports a line per slide', async () => {
 
   assert.equal(code, 0);
   assert.match(stderr, /1\. {2}Refit Status/);
-  assert.match(stderr, /8\. {2}Runbook.*tokens/);
+  assert.match(stderr, /9\. {2}Runbook.*tokens/);
 });
 
 test('a deck is refused for in-place rewriting', async () => {

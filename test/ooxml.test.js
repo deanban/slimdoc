@@ -109,16 +109,32 @@ test('ooxml: AlternateContent with only a Fallback still yields its content', ()
 // text
 // --------------------------------------------------------------------------
 
-test('ooxml: an element owns only its own text, not its children\'s', () => {
+test('ooxml: an element owns its own text, and a child owns the text after it', () => {
   const node = parseXml(`<a:p xmlns:a="${A}">lead<a:t>inner</a:t>tail</a:p>`);
 
-  assert.equal(node.text, 'leadtail');
+  assert.equal(node.text, 'lead', "an element's own text runs up to its first child");
   assert.equal(child(node, 'a', 't').text, 'inner');
+  assert.equal(child(node, 'a', 't').tail, 'tail', 'text after a child is held with that child');
 });
 
 test('ooxml: textOf walks the subtree in document order', () => {
   const node = parseXml(`<a:p xmlns:a="${A}"><a:r><a:t>Warp </a:t></a:r><a:r><a:t>core</a:t></a:r></a:p>`);
   assert.equal(textOf(node), 'Warp core');
+});
+
+/**
+ * Mixed content, which every element sweeping up all of its own text gets
+ * wrong. `<a:t>Warp <a:br/>core</a:t>` used to read `Warp core` only because
+ * both fragments happened to be adjacent in the accumulator; put a word on
+ * either side of a child and the order comes out as "everything outside, then
+ * everything inside" — which is not what the document says.
+ */
+test('ooxml: mixed content comes back in the order it was written', () => {
+  const node = parseXml(`<a:p xmlns:a="${A}">Warp <a:t>core</a:t> recertification</a:p>`);
+  assert.equal(textOf(node), 'Warp core recertification');
+
+  const nested = parseXml(`<a:p xmlns:a="${A}">one<a:r>two<a:t>three</a:t>four</a:r>five</a:p>`);
+  assert.equal(textOf(nested), 'onetwothreefourfive');
 });
 
 test('ooxml: entities and CDATA are decoded, whitespace is left alone', () => {
