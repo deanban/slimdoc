@@ -15,7 +15,7 @@ import test from 'node:test';
 
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
-import { toLines, layoutPage } from '../dist/pdf-layout.js';
+import { toLines, layoutPage, suppressRunningText } from '../dist/pdf-layout.js';
 import { preserveGridRegions } from '../dist/pdf-preformat.js';
 import { localFixture } from './helpers/local.js';
 
@@ -173,6 +173,81 @@ test('pdf: body text that happens to match the footer survives', async () => {
   const legal = 'not for distribution outside the Starfleet Corps of Engineers';
 
   assert.ok(text.split(legal).length - 1 >= 2, 'the body copies on page 7 were suppressed');
+});
+
+/**
+ * Header lines built by hand rather than by a fixture, because the shape being
+ * tested is a *set* of pages whose headers differ by one number — which is the
+ * whole point, and which no single document could hold both sides of.
+ */
+const headed = (height, ...texts) => ({
+  index: 0,
+  height,
+  lines: texts.map((text, i) => ({ y: height - 30 - i * 14, left: 72, right: 300, text })),
+});
+
+/**
+ * Suppression keys a header by position and text, normalising the digits in a
+ * page counter because a counter reads differently on every page. It used to
+ * normalise *any* run of digits: `\b\d+\b`. Under that rule a report whose
+ * running head carries the year — the ordinary way a multi-year document is
+ * headed — collapsed to one key, and three of its four headers were deleted as
+ * repetition. So did `Section 3` and `Section 4`, which are not furniture at
+ * all but the only thing on the page saying which section the reader is in.
+ *
+ * The loss is silent and it is meaning, not noise. Only the counter forms are
+ * normalised now: `page N`, `N of M`, `N/M`, and a line that is nothing but a
+ * number.
+ */
+test('pdf: a year in a running head is content, not a page counter', () => {
+  const pages = [2023, 2024, 2025, 2026].map((year) => headed(792, `Annual Report ${year}`));
+  const suppressed = suppressRunningText(pages);
+
+  assert.equal(suppressed, 0, 'a header differing only by its year was read as one repeated line');
+  assert.deepEqual(
+    pages.map((p) => p.lines.map((l) => l.text)),
+    [['Annual Report 2023'], ['Annual Report 2024'], ['Annual Report 2025'], ['Annual Report 2026']],
+  );
+});
+
+test('pdf: a section number in a running head is content too', () => {
+  const pages = ['Section 3', 'Section 4', 'Section 5', 'Section 6'].map((t) => headed(792, t));
+
+  assert.equal(suppressRunningText(pages), 0);
+  assert.deepEqual(pages.map((p) => p.lines.length), [1, 1, 1, 1]);
+});
+
+test('pdf: the counter forms are still normalised, so the footer goes', () => {
+  for (const counters of [
+    ['Page 1 of 4', 'Page 2 of 4', 'Page 3 of 4', 'Page 4 of 4'],
+    ['1/4', '2/4', '3/4', '4/4'],
+    ['1', '2', '3', '4'],
+    ['Page 1', 'Page 2', 'Page 3', 'Page 4'],
+  ]) {
+    const pages = counters.map((text) => headed(792, 'ACME LOGISTICS', text));
+    // The banner is identical on every page, the counter differs on every page:
+    // both are furniture, and 6 of the 8 lines are the repetitions.
+    assert.equal(suppressRunningText(pages), 6, counters.join(' '));
+    assert.deepEqual(pages[3].lines, [], counters.join(' '));
+  }
+});
+
+/**
+ * The end-to-end guard for the same narrowing, on a document nobody here laid
+ * out: 38 pages under a running title, footed with a bare page number. Both are
+ * furniture and both must still go — tightening the rule must not cost real
+ * suppression, which is where most of a PDF's saved tokens come from.
+ */
+test('pdf: a real paper still loses its running title and page numbers', async (t) => {
+  const file = localFixture('paper-single', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file, { pages: [[1, 8]] });
+  const text = doc.sections.map((s) => s.text).join('\n');
+  const title = 'TradingAgents: Multi-Agents LLM Financial Trading Framework';
+
+  assert.equal(text.split(title).length - 1, 1, 'the running title was kept on more than one page');
+  assert.ok(doc.warnings.some((w) => /suppressed 12 repeated/.test(w)), doc.warnings.join('; '));
 });
 
 test('pdf: suppression can be turned off', async () => {

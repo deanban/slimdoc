@@ -315,12 +315,22 @@ const REPEAT_SHARE = 0.6;
 /** Two baselines this close, in points, are the same position on the page. */
 const POSITION_TOLERANCE = 3;
 
-const PAGE_COUNTER = /\b(?:page\s+)?\d+(?:\s*(?:of|\/)\s*\d+)?\b/gi;
+/** `page 4`, `4 of 12`, `4/12` — a number that announces itself as a counter. */
+const PAGE_COUNTER = /\bpage\s+\d+(?:\s*(?:of|\/)\s*\d+)?|\b\d+\s*(?:of|\/)\s*\d+\b/gi;
+/** …and the form that announces nothing, but is the whole line: `4`, `- 4 -`. */
+const COUNTER_ALONE = /^[[(]?[-–—]?\s*\d+\s*[-–—]?[)\]]?$/;
 
 /**
  * A page counter reads differently on every page, so a run of digits inside one
- * is normalised — but only inside one. Normalising every digit would collapse
- * annual headings, section numbers and dates, which are meaning rather than
+ * is normalised — but only inside one.
+ *
+ * Which is why the counter has to be recognised by its *form* rather than by
+ * containing a number. Matching any `\d+` collapsed `Annual Report 2023` and
+ * `Annual Report 2026` into one key, and `Section 3` and `Section 4` into
+ * another, and then deleted every copy but the first: a running head is often
+ * the only line on the page that says which year or which section the reader is
+ * in, so what got dropped was the meaning and what survived was the wrong one.
+ * Furniture is what repeats; a number that changes the sense of the line is not
  * furniture.
  */
 function furnitureKey(line: Line): string {
@@ -328,8 +338,7 @@ function furnitureKey(line: Line): string {
   // page's own metrics, so the same header is spaced differently on a page
   // whose body happens to use a narrower font.
   const text = line.text.replace(/\s+/g, ' ').trim();
-  const normalised = PAGE_COUNTER.test(text) ? text.replace(PAGE_COUNTER, '#') : text;
-  PAGE_COUNTER.lastIndex = 0;
+  const normalised = COUNTER_ALONE.test(text) ? '#' : text.replace(PAGE_COUNTER, '#');
   return `${Math.round(line.y / POSITION_TOLERANCE)}|${normalised}`;
 }
 
