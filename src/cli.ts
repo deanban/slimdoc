@@ -12,7 +12,7 @@ import { extractFromBuffer, extractFromFile } from './extract.js';
 import { readClipboard, readStdinBuffer, writeClipboard } from './io.js';
 import { cleanDocument, type SectionedDoc, type SectionStats } from './sections.js';
 import { looksLikeTranscript } from './transcript.js';
-import type { SourceFormat, Stats } from './types.js';
+import { resolveExtractOptions, type SourceFormat, type Stats } from './types.js';
 
 const HELP = `slimdoc [file...] [options]
 
@@ -53,7 +53,7 @@ Documents
       --no-diagram-text   skip SmartArt text
       --dehyphenate       rejoin words split across PDF line breaks
       --no-tables         do not preserve aligned PDF regions as code blocks
-      --no-running-headers  keep text repeated on every PDF page
+      --no-running-headers  keep text repeated on every page / slide
       --max-pages <n>     cap on the pages actually read (default 500)
 Other
   -s, --stats             print a before/after report to stderr
@@ -101,23 +101,30 @@ function outputName(source: string, format: SourceFormat): string {
  * apart, and writing both to `summary.md` destroys the first result invisibly:
  * the run succeeds, and the file that survives looks correct. The containing
  * directory is what the user distinguished them by, so it is what disambiguates
- * them here.
+ * them here. First input wins the plain name; later ones take the prefix.
+ *
+ * Collisions are tracked case-insensitively because the filesystem underneath is
+ * usually case-insensitive. `Report.pdf` and `report.pdf` produce two names that
+ * differ as strings, so an exact-match check called them distinct and let macOS
+ * and Windows do the overwriting this function exists to prevent — the same
+ * silent loss, one layer down, on the platforms most users are on.
  */
 function outputNames(docs: SectionedDoc[]): Map<string, string> {
   const names = new Map<string, string>();
   const taken = new Set<string>();
+  const claim = (name: string): boolean => !taken.has(name.toLowerCase());
 
   for (const { source, format } of docs) {
     const preferred = outputName(source, format);
     let name = preferred;
-    if (taken.has(name)) {
+    if (!claim(name)) {
       const parent = basename(dirname(source));
       const ext = extname(preferred);
       const stem = preferred.slice(0, preferred.length - ext.length);
       name = parent === '' || parent === '.' ? preferred : `${parent}-${stem}${ext}`;
-      for (let n = 2; taken.has(name); n++) name = `${stem}-${n}${ext}`;
+      for (let n = 2; !claim(name); n++) name = `${stem}-${n}${ext}`;
     }
-    taken.add(name);
+    taken.add(name.toLowerCase());
     names.set(source, name);
   }
   return names;
@@ -137,16 +144,20 @@ async function collect(inv: Invocation): Promise<{ docs: SectionedDoc[]; failed:
   let failed = false;
 
   const extract = inv.extractOpts;
+  // The same cap a file is refused by, applied where the bytes enter rather than
+  // after they are all in memory: neither a pipe nor a clipboard has a size to
+  // stat, so this is the only place the limit can be enforced for them.
+  const { maxInputBytes } = resolveExtractOptions(extract).limits;
 
   if (inv.clipboard) {
-    const text = await readClipboard();
+    const text = await readClipboard(maxInputBytes);
     const doc = await extractFromBuffer(Buffer.from(text, 'utf8'), { extract });
     docs.push({ ...doc, source: '<clipboard>' });
     return { docs, failed };
   }
 
   if (inv.files.length === 0) {
-    const buf = await readStdinBuffer();
+    const buf = await readStdinBuffer(maxInputBytes);
     if (buf === null) throw new UsageError('no input — give a file, pipe stdin, or use --clipboard');
     const doc = await extractFromBuffer(buf, { extract });
     docs.push({ ...doc, source: '<stdin>' });

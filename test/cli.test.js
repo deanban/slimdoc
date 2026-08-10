@@ -340,6 +340,34 @@ test('--out-dir keeps both results when two inputs share a basename', async () =
   assert.ok(written.some((t) => t.includes('beta')), 'the second input was lost');
 });
 
+/**
+ * The same loss one layer down. `Report.pdf` and `report.pdf` produce output names
+ * that differ as strings, so an exact-match collision check passed them both — and
+ * then macOS and Windows, whose filesystems are case-insensitive by default, did
+ * the overwriting the check exists to prevent. Two files in, two files out, on
+ * every platform.
+ */
+test('--out-dir treats names differing only in case as a collision', async () => {
+  await mkdir(join(dir, 'lower'), { recursive: true });
+  await mkdir(join(dir, 'upper'), { recursive: true });
+  const lower = join(dir, 'lower', 'report.md');
+  const upper = join(dir, 'upper', 'Report.md');
+  await writeFile(lower, 'lowercase content\n', 'utf8');
+  await writeFile(upper, 'uppercase content\n', 'utf8');
+  const target = join(dir, 'outdir-case');
+
+  const { code } = await cli(['--out-dir', target, lower, upper]);
+  assert.equal(code, 0);
+
+  const names = (await readdir(target)).sort();
+  assert.equal(names.length, 2, `expected two files, got ${names.join(', ')}`);
+  assert.equal(
+    new Set(names.map((n) => n.toLowerCase())).size,
+    2,
+    `two names that collide when case-folded: ${names.join(', ')}`,
+  );
+});
+
 test('--write rewrites a text input in place', async () => {
   const path = await fixture('inplace.md', MESSY);
   const { code, stdout } = await cli(['--write', path]);
