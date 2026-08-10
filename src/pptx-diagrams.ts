@@ -57,37 +57,74 @@ function hierarchy(model: XmlNode): Map<string, Edge> {
   return edges;
 }
 
-function depthOf(id: string, edges: Map<string, Edge>, points: Map<string, Point>): number {
-  let depth = 0;
-  let current = edges.get(id)?.parent;
-  // A malformed diagram can describe a cycle; the point count bounds the walk.
-  for (let step = 0; current !== undefined && step <= points.size; step++) {
-    if (points.has(current)) depth += 1;
-    current = edges.get(current)?.parent;
+/**
+ * The tree the connections describe: each point's children, in sibling order.
+ *
+ * A point whose parent is not a content point — absent, or the `doc` root, or
+ * scaffolding — is a root of the walk.
+ */
+function treeOf(points: Map<string, Point>, edges: Map<string, Edge>): Map<string, string[]> {
+  const position = new Map([...points.keys()].map((id, index) => [id, index]));
+  const tree = new Map<string, string[]>();
+  const ROOT = '';
+
+  for (const id of points.keys()) {
+    const parent = edges.get(id)?.parent;
+    const under = parent !== undefined && points.has(parent) ? parent : ROOT;
+    tree.set(under, [...(tree.get(under) ?? []), id]);
   }
-  return depth;
+
+  for (const [parent, kids] of tree) {
+    tree.set(
+      parent,
+      [...kids].sort(
+        (a, b) =>
+          (edges.get(a)?.order ?? 0) - (edges.get(b)?.order ?? 0) ||
+          (position.get(a) ?? 0) - (position.get(b) ?? 0),
+      ),
+    );
+  }
+  return tree;
 }
 
 /**
  * The diagram's text as a bulleted list.
  *
- * Ordering follows `srcOrd` within a parent and falls back to document order
- * where the connections do not say — inventing a tree from an ambiguous graph
- * would assert a structure the file does not contain.
+ * Walked as a tree, because `srcOrd` is an ordinal *within a parent*: every
+ * first child carries 0, so sorting all the points by it globally interleaves
+ * the branches and produces a list asserting a hierarchy the file never
+ * described. Roots first, siblings by `srcOrd`, document order to break a tie —
+ * and where the connections say nothing at all, document order is the whole
+ * answer, since inventing a tree from an ambiguous graph would assert structure
+ * the file does not contain either.
+ *
+ * A point with no text of its own contributes no line but still holds its
+ * children, which stay at the depth it was drawn at rather than being indented
+ * under a bullet that is not there.
  */
 export function diagramList(model: XmlNode): string {
   const points = contentPoints(model);
-  const edges = hierarchy(model);
+  const tree = treeOf(points, hierarchy(model));
 
-  const ordered = [...points.values()]
-    .filter((point) => point.text !== '')
-    .map((point, index) => ({ point, order: edges.get(point.id)?.order ?? index, index }))
-    .sort((a, b) => a.order - b.order || a.index - b.index);
+  const lines: string[] = [];
+  const seen = new Set<string>();
 
-  return ordered
-    .map(({ point }) => {
-      const depth = Math.min(depthOf(point.id, edges, points), MAX_DEPTH);
-      return `${INDENT.repeat(depth)}- ${point.text}`;
-    })
-    .join('\n');
+  const walk = (id: string, depth: number): void => {
+    // A malformed diagram can describe a cycle, and a point reached twice is
+    // the only evidence of one this walk needs.
+    if (seen.has(id)) return;
+    seen.add(id);
+
+    const text = points.get(id)?.text ?? '';
+    if (text !== '') lines.push(`${INDENT.repeat(Math.min(depth, MAX_DEPTH))}- ${text}`);
+    for (const kid of tree.get(id) ?? []) walk(kid, text === '' ? depth : depth + 1);
+  };
+
+  for (const root of tree.get('') ?? []) walk(root, 0);
+  // Anything a cycle kept out of the walk still belongs in the output: the text
+  // is real even where the hierarchy around it is not.
+  for (const [id, point] of points) {
+    if (!seen.has(id) && point.text !== '') lines.push(`- ${point.text}`);
+  }
+  return lines.join('\n');
 }

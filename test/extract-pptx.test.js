@@ -16,6 +16,7 @@ import test from 'node:test';
 import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
 import { chartText } from '../dist/pptx-charts.js';
+import { diagramList } from '../dist/pptx-diagrams.js';
 import { parseXml } from '../dist/ooxml.js';
 import { extractPptx } from '../dist/extract-pptx.js';
 import { localFixture } from './helpers/local.js';
@@ -509,6 +510,47 @@ test('pptx: --no-diagram-text drops it', async () => {
 test('pptx: presentation-only diagram points are skipped', async () => {
   const { text } = await read();
   assert.doesNotMatch(text, /\[Text\]/);
+});
+
+/**
+ * `srcOrd` is an ordinal *within a parent*, so every first child carries 0.
+ * Sorting all the points by it globally interleaves the branches: the second
+ * parent's first child sorts alongside the first parent's first child, and the
+ * list that comes out says a hierarchy the diagram does not have.
+ *
+ * A tree has to be walked as a tree — from the roots, siblings in `srcOrd`,
+ * document order to break a tie.
+ */
+test('pptx: a diagram with two branches keeps each child under its own parent', () => {
+  const DGM = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
+  const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+  const point = (id, text) =>
+    `<dgm:pt modelId="${id}"><dgm:t><a:p><a:r><a:t>${text}</a:t></a:r></a:p></dgm:t></dgm:pt>`;
+  const link = (parent, kid, ord) =>
+    `<dgm:cxn type="parOf" srcId="${parent}" destId="${kid}" srcOrd="${ord}"/>`;
+
+  // Declared with the branches interleaved, so document order cannot stand in
+  // for the tree and the connections have to be the thing that decides.
+  const model = parseXml(
+    `<dgm:dataModel xmlns:dgm="${DGM}" xmlns:a="${A}"><dgm:ptLst>` +
+      point('a', 'Alpha') +
+      point('b', 'Beta') +
+      point('a1', 'Alpha-one') +
+      point('b1', 'Beta-one') +
+      point('a2', 'Alpha-two') +
+      point('b2', 'Beta-two') +
+      '</dgm:ptLst><dgm:cxnLst>' +
+      link('a', 'a1', 0) +
+      link('b', 'b1', 0) +
+      link('a', 'a2', 1) +
+      link('b', 'b2', 1) +
+      '</dgm:cxnLst></dgm:dataModel>',
+  );
+
+  assert.equal(
+    diagramList(model),
+    ['- Alpha', '  - Alpha-one', '  - Alpha-two', '- Beta', '  - Beta-one', '  - Beta-two'].join('\n'),
+  );
 });
 
 // --------------------------------------------------------------------------
