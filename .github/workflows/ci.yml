@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A new push to a PR cancels the in-flight run for that PR. Runs on main are
+# never cancelled — release.yml keys off them.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json declares engines.node >= 22, so test the floor and current.
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: node --test test/*.test.js
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Deliberately no separate build step: `prepack` is what has to produce
+      # `dist`, and building here first would pass even if it did not. That is
+      # the exact way this job passed while `npm pack` shipped three files and
+      # no entry points at all.
+      - run: npm ci --ignore-scripts
+
+      # Catches a tarball that is missing dist/, ships node_modules, or has a
+      # broken bin path — all of which only surface after a bad publish.
+      - name: Inspect publish tarball
+        run: npm pack --dry-run
+
+      - name: Verify the CLI runs from a clean install
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination /tmp
+          tarball=$(ls /tmp/slimdoc-*.tgz)
+          mkdir /tmp/smoke && cd /tmp/smoke
+          npm init -y > /dev/null
+          npm install "$tarball"
+          printf 'hello    world\n\n\n\nsecond   line\n' > sample.md
+          ./node_modules/.bin/slimdoc sample.md
+          node --input-type=module -e "
+            import { strict as assert } from 'node:assert';
+            const { clean, extractFromFile, cleanDocument } = await import('slimdoc');
+            for (const [name, fn] of Object.entries({ clean, extractFromFile, cleanDocument })) {
+              assert.equal(typeof fn, 'function', \`missing export: \${name}\`);
+            }
+            assert.match(clean('a    b\n\n\n\nc'), /a b/);
+            console.log('package entry point OK');
+          "
