@@ -7,7 +7,7 @@
  * then everything else top-to-bottom and left-to-right.
  */
 
-import { child, children, descendants, type XmlNode } from './ooxml.js';
+import { child, children, descendants, isTrue, type XmlNode } from './ooxml.js';
 import { meaningfulAlt } from './extract-html.js';
 import { chartText } from './pptx-charts.js';
 import { diagramList } from './pptx-diagrams.js';
@@ -93,33 +93,69 @@ function runText(paragraph: XmlNode): string {
   return text;
 }
 
-/**
- * A paragraph's own bullet property is what marks it as a list item. Inheriting
- * one from the master would bullet every line of the body placeholder, which is
- * how a code sample turns into a bullet list.
- */
-function isListItem(properties: XmlNode | undefined): boolean {
-  if (!properties) return false;
-  return ['buChar', 'buAutoNum'].some((kind) => child(properties, 'a', kind) !== undefined);
+/** The deepest list level PresentationML defines. */
+const MAX_LEVEL = 8;
+
+/** A `lvlNpPr` from an `a:lstStyle` or one of the master's `p:txStyles`. */
+function levelProperties(style: XmlNode | undefined, depth: number): XmlNode | undefined {
+  const level = Math.max(0, Math.min(depth, MAX_LEVEL)) + 1;
+  return style && child(style, 'a', `lvl${level}pPr`);
 }
 
-function paragraphText(paragraph: XmlNode): string {
+/**
+ * Whether this paragraph is a list item, asking the file the way the file is
+ * written.
+ *
+ * PowerPoint does not write a bullet on the paragraph. A content placeholder
+ * inherits its glyph from the layout placeholder's `a:lstStyle`, which inherits
+ * from the master's `p:bodyStyle`; the paragraph's own `a:pPr` says nothing
+ * unless the author changed something. Reading only the paragraph — as this did
+ * — therefore finds no list at all in a deck that is nothing but lists.
+ *
+ * Inheriting *unconditionally* is the opposite error and a worse one. The
+ * master keeps three separate list styles, and which applies is decided by what
+ * the shape is: `titleStyle` for a title placeholder, `bodyStyle` for a body
+ * one, `otherStyle` for a shape that is not a placeholder at all. In the default
+ * PowerPoint template `bodyStyle` carries a `buChar` and `otherStyle` carries
+ * nothing — and every paragraph of all three real decks measured here lives in a
+ * plain text box. Inherit without asking which style applies and those decks
+ * gain hundreds of bullets that are on no slide.
+ *
+ * The first level to say anything wins, `buNone` included: that is how an author
+ * turns a single line off inside an otherwise bulleted placeholder.
+ */
+function isListItem(properties: XmlNode | undefined, styles: BulletStyles, depth: number): boolean {
+  const chain = [properties, ...styles.map((style) => levelProperties(style, depth))];
+  for (const level of chain) {
+    if (!level) continue;
+    if (child(level, 'a', 'buNone')) return false;
+    if (child(level, 'a', 'buChar') || child(level, 'a', 'buAutoNum')) return true;
+  }
+  return false;
+}
+
+/** The list styles a shape's paragraphs resolve through, nearest first. */
+type BulletStyles = ReadonlyArray<XmlNode | undefined>;
+
+function paragraphText(paragraph: XmlNode, styles: BulletStyles): string {
   const properties = child(paragraph, 'a', 'pPr');
   const depth = Number(properties?.attrs['lvl'] ?? 0) || 0;
   const text = runText(paragraph);
   if (text.trim() === '') return '';
 
-  const indent = INDENT.repeat(Math.max(0, Math.min(depth, 8)));
+  const indent = INDENT.repeat(Math.max(0, Math.min(depth, MAX_LEVEL)));
   // A numbered list becomes bullets: the ordinal lives in the master's list
   // style rather than in the paragraph, so any number here would be invented.
-  return `${indent}${isListItem(properties) ? '- ' : ''}${text}`;
+  return `${indent}${isListItem(properties, styles, depth) ? '- ' : ''}${text}`;
 }
 
-function bodyText(shape: XmlNode): string {
+function bodyText(shape: XmlNode, ctx: SlideContext): string {
   const body = child(shape, 'p', 'txBody');
   if (!body) return '';
+
+  const styles = bulletStyles(shape, ctx);
   return children(body, 'a', 'p')
-    .map(paragraphText)
+    .map((paragraph) => paragraphText(paragraph, styles))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -159,8 +195,8 @@ function tableGrid(table: XmlNode): TableResult {
       if (Number(cell.attrs['gridSpan'] ?? 1) > 1 || Number(cell.attrs['rowSpan'] ?? 1) > 1) merged++;
 
       const previousRow = rows[rows.length - 1];
-      if (cell.attrs['hMerge'] === '1') row[column] = row[column - 1] ?? '';
-      else if (cell.attrs['vMerge'] === '1') row[column] = previousRow?.[column] ?? '';
+      if (isTrue(cell.attrs['hMerge'])) row[column] = row[column - 1] ?? '';
+      else if (isTrue(cell.attrs['vMerge'])) row[column] = previousRow?.[column] ?? '';
       else row[column] = cellText(cell);
     }
     rows.push(row);
@@ -193,10 +229,23 @@ interface Candidate {
   node: XmlNode;
 }
 
+/** Which of the master's three list styles a shape's text resolves through. */
+export type StyleKind = 'title' | 'body' | 'other';
+
+/** What a shape inherits from outside the slide: read once per slide. */
+export interface Inheritance {
+  /** Placeholder `idx` -> type, from the slide layout. */
+  types: Map<string, string>;
+  /** The layout placeholder's own `a:lstStyle`, found by `idx` or by type. */
+  layoutByIdx: Map<string, XmlNode>;
+  layoutByType: Map<string, XmlNode>;
+  /** The master's `p:txStyles`, which are `a:lstStyle` in all but name. */
+  masterStyles: Map<StyleKind, XmlNode>;
+}
+
 export interface SlideContext {
   slide: { cx: number; cy: number };
-  /** Placeholder `idx` -> type, resolved from the slide layout. */
-  placeholderTypes: Map<string, string>;
+  inherited: Inheritance;
   hiddenContent: boolean;
   chartData: boolean;
   diagramText: boolean;
@@ -219,16 +268,59 @@ export interface ShapeOutput {
 
 const NON_VISUAL = ['nvSpPr', 'nvPicPr', 'nvGraphicFramePr'];
 
-function placeholderRank(shape: XmlNode, ctx: SlideContext): number {
+/** The `p:ph` that makes a shape a placeholder, if it is one. */
+export function placeholderOf(shape: XmlNode): XmlNode | undefined {
   const nonVisual = NON_VISUAL.map((name) => child(shape, 'p', name)).find(Boolean);
   const properties = nonVisual && child(nonVisual, 'p', 'nvPr');
-  const ph = properties && child(properties, 'p', 'ph');
-  if (!ph) return UNRANKED;
+  return properties && child(properties, 'p', 'ph');
+}
+
+/** A shape's own overrides for its list levels, which outrank the layout's. */
+export function listStyleOf(shape: XmlNode): XmlNode | undefined {
+  const body = child(shape, 'p', 'txBody');
+  return body && child(body, 'a', 'lstStyle');
+}
+
+/**
+ * A placeholder may state only its index and inherit the type from the layout;
+ * ECMA-376 makes `body` the default when neither says otherwise.
+ */
+function placeholderType(ph: XmlNode, types: Map<string, string>): string {
   const idx = ph.attrs['idx'];
-  // A placeholder may state only its index and inherit the type from the
-  // layout; ECMA-376 makes `body` the default when neither says otherwise.
-  const type = ph.attrs['type'] ?? (idx === undefined ? 'body' : ctx.placeholderTypes.get(idx) ?? 'body');
-  return PLACEHOLDER_RANK[type] ?? UNRANKED;
+  return ph.attrs['type'] ?? (idx === undefined ? 'body' : types.get(idx) ?? 'body');
+}
+
+function placeholderRank(shape: XmlNode, ctx: SlideContext): number {
+  const ph = placeholderOf(shape);
+  if (!ph) return UNRANKED;
+  return PLACEHOLDER_RANK[placeholderType(ph, ctx.inherited.types)] ?? UNRANKED;
+}
+
+/** Placeholder roles the master styles as body text; `sldNum` and `ftr` are not among them. */
+const BODY_PLACEHOLDERS = new Set(['body', 'subTitle', 'obj', 'tbl', 'chart', 'clipArt', 'dgm', 'media', 'pic']);
+
+/**
+ * The list styles a shape's paragraphs resolve through, nearest first: its own
+ * overrides, then the layout placeholder it fills, then the master style for
+ * what kind of shape it is.
+ *
+ * A shape that is not a placeholder resolves through `otherStyle` and nothing
+ * else — it fills no layout slot, so there is no layout entry to find. Which is
+ * the case that matters: it is most of every deck exported by a tool.
+ */
+function bulletStyles(shape: XmlNode, ctx: SlideContext): BulletStyles {
+  const { types, layoutByIdx, layoutByType, masterStyles } = ctx.inherited;
+  const own = listStyleOf(shape);
+  const ph = placeholderOf(shape);
+  if (!ph) return [own, masterStyles.get('other')];
+
+  const type = placeholderType(ph, types);
+  const idx = ph.attrs['idx'];
+  const layout = (idx === undefined ? undefined : layoutByIdx.get(idx)) ?? layoutByType.get(type);
+
+  const kind: StyleKind =
+    type === 'title' || type === 'ctrTitle' ? 'title' : BODY_PLACEHOLDERS.has(type) ? 'body' : 'other';
+  return [own, layout, masterStyles.get(kind)];
 }
 
 /**
@@ -343,7 +435,7 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
       // The label a section carries has to come from the title placeholder
       // itself: taking the first block instead would caption a slide that opens
       // with a photograph as `[image: …]`.
-      const heading = bodyText(node).split('\n')[0]?.trim();
+      const heading = bodyText(node, ctx).split('\n')[0]?.trim();
       if (heading) out.title = heading;
     }
     if (node.local === 'pic') {
@@ -359,7 +451,7 @@ export function serialiseSpTree(tree: XmlNode, ctx: SlideContext): ShapeOutput {
       serialiseFrame(node, ctx, out);
       continue;
     }
-    const text = bodyText(node);
+    const text = bodyText(node, ctx);
     if (text !== '') out.blocks.push(text);
   }
 

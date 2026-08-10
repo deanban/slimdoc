@@ -5,13 +5,31 @@
  * `<p:sldIdLst>` resolved through the presentation's relationships, never from
  * the numbers in `slideN.xml` — reordering and deletion leave those permuted
  * and gapped. And the layout and master are read for *metadata* only: they
- * resolve a placeholder's type, but their text is chrome ("Click to add
- * title", footers, slide numbers) and never reaches the output.
+ * resolve a placeholder's type and the list style its paragraphs take their
+ * bullets from, but their text is chrome ("Click to add title", footers, slide
+ * numbers) and never reaches the output.
  */
 
 import { UnsupportedFormatError } from './errors.js';
-import { child, children, parseXml, readRels, relsPartFor, resolvePart, type XmlNode } from './ooxml.js';
-import { serialiseSpTree, type ShapeOutput, type SlideContext } from './pptx-shapes.js';
+import {
+  child,
+  children,
+  isTrue,
+  parseXml,
+  readRels,
+  relsPartFor,
+  resolvePart,
+  type XmlNode,
+} from './ooxml.js';
+import {
+  listStyleOf,
+  placeholderOf,
+  serialiseSpTree,
+  type Inheritance,
+  type ShapeOutput,
+  type SlideContext,
+  type StyleKind,
+} from './pptx-shapes.js';
 import type { Section, SectionedDoc } from './sections.js';
 import { resolveExtractOptions, type ExtractOverrides } from './types.js';
 import { selectPages } from './utils/ranges.js';
@@ -20,6 +38,14 @@ import { readZipEntries } from './zip.js';
 const PRESENTATION_PART = 'ppt/presentation.xml';
 const SLIDE_RELATIONSHIP = /\/slide$/;
 const LAYOUT_RELATIONSHIP = /\/slideLayout$/;
+const MASTER_RELATIONSHIP = /\/slideMaster$/;
+
+/** The master's three list styles, and which shapes resolve through each. */
+const MASTER_STYLES: ReadonlyArray<readonly [StyleKind, string]> = [
+  ['title', 'titleStyle'],
+  ['body', 'bodyStyle'],
+  ['other', 'otherStyle'],
+];
 
 /** A 4:3 deck in EMU, used only when a malformed package omits `<p:sldSz>`. */
 const DEFAULT_SLIDE = { cx: 9144000, cy: 6858000 };
@@ -53,7 +79,7 @@ function slideRefs(entries: Entries, presentation: XmlNode): SlideRef[] {
 
     const part = resolvePart(PRESENTATION_PART, rel.target);
     const root = partOf(entries, part);
-    if (root) refs.push({ part, root, hidden: root.attrs['show'] === '0' });
+    if (root) refs.push({ part, root, hidden: isTrue(root.attrs['show']) === false });
   }
   return refs;
 }
@@ -66,25 +92,63 @@ function slideSize(presentation: XmlNode): { cx: number; cy: number } {
 }
 
 /**
- * Placeholder `idx` -> type, from the slide's layout. A slide placeholder often
- * states only its index and inherits the rest, so without this the "title and
- * body first" ordering is unreliable on decks that lean on their layouts.
+ * What a slide's shapes inherit: placeholder types from the layout, and the
+ * list styles a paragraph's bullet resolves through.
+ *
+ * A slide placeholder often states only its index and inherits the rest, so
+ * without the layout the "title and body first" ordering is unreliable. And a
+ * paragraph in PowerPoint usually says nothing about its bullet at all — the
+ * glyph comes from the layout placeholder's `a:lstStyle`, or failing that from
+ * one of the master's three `p:txStyles`. Reading only the paragraph finds no
+ * list in a deck that is nothing but lists.
+ *
+ * Still metadata only: no text from either part reaches the output.
  */
-function placeholderTypes(entries: Entries, slidePart: string): Map<string, string> {
-  const types = new Map<string, string>();
-  const rel = [...relsOf(entries, slidePart).values()].find((r) => LAYOUT_RELATIONSHIP.test(r.type));
-  if (!rel) return types;
+function inheritanceFor(entries: Entries, slidePart: string, cache: Map<string, Inheritance>): Inheritance {
+  const inherited: Inheritance = {
+    types: new Map(),
+    layoutByIdx: new Map(),
+    layoutByType: new Map(),
+    masterStyles: new Map(),
+  };
 
-  const layout = partOf(entries, resolvePart(slidePart, rel.target));
+  const rel = [...relsOf(entries, slidePart).values()].find((r) => LAYOUT_RELATIONSHIP.test(r.type));
+  if (!rel || rel.external) return inherited;
+
+  // Keyed by layout rather than by slide: a deck of two hundred slides usually
+  // has a handful of layouts over one master, and this is otherwise two XML
+  // parses per slide for an answer that does not vary between them.
+  const layoutPart = resolvePart(slidePart, rel.target);
+  const cached = cache.get(layoutPart);
+  if (cached) return cached;
+  cache.set(layoutPart, inherited);
+
+  const layout = partOf(entries, layoutPart);
   const tree = layout && child(child(layout, 'p', 'cSld') ?? layout, 'p', 'spTree');
   for (const shape of tree ? children(tree, 'p', 'sp') : []) {
-    const nvSpPr = child(shape, 'p', 'nvSpPr');
-    const nvPr = nvSpPr && child(nvSpPr, 'p', 'nvPr');
-    const ph = nvPr && child(nvPr, 'p', 'ph');
-    const idx = ph?.attrs['idx'];
-    if (idx !== undefined && ph?.attrs['type'] !== undefined) types.set(idx, ph.attrs['type']);
+    const ph = placeholderOf(shape);
+    if (!ph) continue;
+
+    const idx = ph.attrs['idx'];
+    const type = ph.attrs['type'];
+    if (idx !== undefined && type !== undefined) inherited.types.set(idx, type);
+
+    const style = listStyleOf(shape);
+    if (!style) continue;
+    if (idx !== undefined) inherited.layoutByIdx.set(idx, style);
+    if (type !== undefined) inherited.layoutByType.set(type, style);
   }
-  return types;
+
+  const masterRel = [...relsOf(entries, layoutPart).values()].find((r) => MASTER_RELATIONSHIP.test(r.type));
+  if (!masterRel || masterRel.external) return inherited;
+
+  const master = partOf(entries, resolvePart(layoutPart, masterRel.target));
+  const styles = master && child(master, 'p', 'txStyles');
+  for (const [kind, name] of MASTER_STYLES) {
+    const node = styles && child(styles, 'p', name);
+    if (node) inherited.masterStyles.set(kind, node);
+  }
+  return inherited;
 }
 
 function addTotals(into: ShapeOutput, one: ShapeOutput): void {
@@ -135,6 +199,7 @@ export function extractPptx(
     blocks: [], images: 0, captionedImages: 0, mergedCells: 0, skippedCharts: [], chartNotes: [],
   };
   const sections: Section[] = [];
+  const inheritance = new Map<string, Inheritance>();
 
   for (const page of selection.pages) {
     const ref = included[page - 1];
@@ -143,7 +208,7 @@ export function extractPptx(
     const rels = relsOf(entries, ref.part);
     const ctx: SlideContext = {
       slide,
-      placeholderTypes: placeholderTypes(entries, ref.part),
+      inherited: inheritanceFor(entries, ref.part, inheritance),
       hiddenContent: opts.hiddenContent,
       chartData: opts.chartData,
       diagramText: opts.diagramText,

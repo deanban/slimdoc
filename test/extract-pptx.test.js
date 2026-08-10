@@ -17,9 +17,12 @@ import { extractFromFile, SUPPORTED_EXTENSIONS } from '../dist/extract.js';
 import { cleanDocument } from '../dist/sections.js';
 import { chartText } from '../dist/pptx-charts.js';
 import { parseXml } from '../dist/ooxml.js';
+import { extractPptx } from '../dist/extract-pptx.js';
 import { localFixture } from './helpers/local.js';
+import { deckOf, slideXml, textBox } from './helpers/deck.js';
 
-const DECK = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'corpus', 'kitchen-sink.pptx');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DECK = join(HERE, 'fixtures', 'corpus', 'kitchen-sink.pptx');
 
 async function read(extract = {}, cleanOpts = { preset: 'balanced' }) {
   const doc = await extractFromFile(DECK, extract);
@@ -151,6 +154,89 @@ test('pptx: bullet depth survives as indentation', async () => {
   assert.match(text, /^ {2}- Warp field geometry$/m);
   assert.match(text, /^ {4}- Nacelle 2 plasma injectors$/m);
   assert.match(text, /^ {6}- Serial UP.4471$/m);
+});
+
+/** Lines that came out as list items, trimmed of their indentation. */
+const bulletsIn = (text) =>
+  text.split('\n').filter((line) => /^\s*- /.test(line)).map((line) => line.trim().slice(2));
+
+/**
+ * PowerPoint does not write a bullet down. A content placeholder inherits its
+ * glyph from the layout, which inherits from the master's `<p:bodyStyle>`, and
+ * the paragraph itself says nothing at all — so reading only the paragraph's own
+ * `pPr`, as slimdoc did, finds no list in a deck that is nothing but lists.
+ *
+ * This fixture is built on PowerPoint's own default template through
+ * python-pptx, so the master, the layouts and the placeholder wiring are
+ * Microsoft's. It holds one of each case the resolution has to tell apart, and
+ * the two directions are equally important: `titleStyle` carries `buNone` and
+ * `otherStyle` carries no bullet at all, so a fix that simply inherits from the
+ * master would bullet every title and every caption on every deck.
+ */
+test('pptx: a bullet inherited from the master is still a bullet', async () => {
+  const doc = await extractFromFile(join(HERE, 'fixtures', 'generated', 'inherited-bullets.pptx'));
+  const text = doc.sections.map((s) => s.text).join('\n');
+
+  assert.deepEqual(bulletsIn(text), [
+    'Warp field geometry', // body placeholder, inherits from bodyStyle
+    'Nacelle plasma injectors', // the same
+    'Dock and power down', // explicit buChar on the paragraph
+    'Drain the plasma manifold', // inherits at lvl 1
+    'Cap the conduit', // inherits at lvl 2
+  ]);
+
+  // And what must not be bulleted: a title, a line that opted out with buNone,
+  // and two paragraphs in a plain text box, which resolve through otherStyle.
+  for (const line of [
+    'Propulsion',
+    'Refit sequence',
+    'This line opted out of the list',
+    'A caption in a plain text box',
+    'A second caption line',
+  ]) {
+    assert.match(text, new RegExp(`^${line}$`, 'm'), `"${line}" should be plain:\n${text}`);
+  }
+});
+
+/**
+ * The deck that makes the naive version of the fix wrong. Ninety-five
+ * paragraphs, none of them bulleted, all of them in plain text boxes — which
+ * resolve through the master's `otherStyle` even though its `bodyStyle` does
+ * carry a `buChar`. Inherit without asking which style applies and this deck
+ * gains ninety-five bullets that are not on any slide.
+ */
+test('pptx: a deck of plain text boxes gains no bullets', async (t) => {
+  const file = localFixture('deck-textboxes', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file);
+  const text = doc.sections.map((s) => s.text).join('\n');
+
+  assert.equal(bulletsIn(text).length, 0, `bulleted:\n${bulletsIn(text).join('\n')}`);
+  assert.ok(text.split('\n').filter((l) => l.trim()).length > 80, 'the deck came out empty instead');
+});
+
+/**
+ * The deck with explicit bullets, which must come through the new resolution
+ * unchanged and un-multiplied.
+ *
+ * Worth recording what these three real decks turned out to be: not one of them
+ * uses a content placeholder. Every paragraph in all three sits in a plain text
+ * box, which is why they are all guards against over-bulleting and why none of
+ * them can demonstrate inheritance working — that is what the python-pptx
+ * fixture above is for. A deck exported by a tool rather than typed in
+ * PowerPoint is apparently made this way, and it is the shape slimdoc will meet.
+ */
+test('pptx: a real deck keeps exactly the bullets that are written in it', async (t) => {
+  const file = localFixture('deck-mixed', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file);
+  const bullets = bulletsIn(doc.sections.map((s) => s.text).join('\n'));
+  const written = bullets.filter((line) => !/^(Category|Series): /.test(line));
+
+  assert.equal(written.length, 14, `expected the 14 buChar paragraphs, got:\n${written.join('\n')}`);
+  assert.ok(written.includes('Production pilot with clinical team'), written.join('\n'));
 });
 
 /**
@@ -423,6 +509,50 @@ test('pptx: --no-diagram-text drops it', async () => {
 test('pptx: presentation-only diagram points are skipped', async () => {
   const { text } = await read();
   assert.doesNotMatch(text, /\[Text\]/);
+});
+
+// --------------------------------------------------------------------------
+// ST_Boolean
+// --------------------------------------------------------------------------
+
+/**
+ * `ST_Boolean` is `1`/`0` *or* `true`/`false`, and both are equally valid.
+ * PowerPoint writes the digits, so a deck from PowerPoint never exercises the
+ * words — and slimdoc compared against `'1'` and `'0'` as strings, so a deck
+ * from any other writer had its hidden slides shown and its merged cells
+ * duplicated. Absorbing that variance is the reason `ooxml.ts` exists.
+ */
+test('pptx: show="false" hides a slide as surely as show="0"', () => {
+  const deck = deckOf([
+    slideXml(textBox(['The slide everybody sees'])),
+    slideXml(textBox(['DRAFT: not for the meeting']), 'show="false"'),
+  ]);
+
+  const plain = extractPptx(deck, 'deck.pptx');
+  assert.equal(plain.sections.length, 1);
+  assert.doesNotMatch(plain.text, /DRAFT/);
+  assert.ok(plain.warnings.some((w) => /1 hidden slide/.test(w)), plain.warnings.join('; '));
+
+  assert.equal(extractPptx(deck, 'deck.pptx', { hiddenContent: true }).sections.length, 2);
+});
+
+test('pptx: hMerge="true" is a merge, not a cell with text of its own', () => {
+  const cell = (text, attrs = '') =>
+    `<a:tc ${attrs}><a:txBody><a:bodyPr/><a:p><a:r><a:t>${text}</a:t></a:r></a:p></a:txBody></a:tc>`;
+  const table =
+    '<p:graphicFrame><p:xfrm><a:off x="0" y="0"/><a:ext cx="5000000" cy="2000000"/></p:xfrm>' +
+    '<a:graphic><a:graphicData><a:tbl>' +
+    `<a:tr>${cell('Deck')}${cell('Alpha shift')}</a:tr>` +
+    // As a writer emits a merge: the origin says how far it spans, the
+    // continuation says it is one. Its text is a leftover, never displayed.
+    `<a:tr>${cell('Deck 36', 'gridSpan="2"')}${cell('leaked', 'hMerge="true"')}</a:tr>` +
+    '</a:tbl></a:graphicData></a:graphic></p:graphicFrame>';
+
+  const doc = extractPptx(deckOf([slideXml(table)]), 'deck.pptx');
+
+  assert.doesNotMatch(doc.text, /leaked/, `a continuation cell emitted its own text:\n${doc.text}`);
+  assert.match(doc.text, /\| Deck 36 \| Deck 36 \|/, doc.text);
+  assert.ok(doc.warnings.some((w) => /merged cells/.test(w)), doc.warnings.join('; '));
 });
 
 // --------------------------------------------------------------------------

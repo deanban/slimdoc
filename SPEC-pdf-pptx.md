@@ -406,14 +406,25 @@ type (`ctrTitle`/`title`, then `subTitle`/`body`), then sort remaining shapes by
 composed position. `<p:grpSp>` requires composing the group transform (`<a:xfrm>` child
 offset, extent scaling, rotation, flips), not just reading child offsets.
 
-**Visibility.** Skip slides marked `show="0"`, shapes with `<a:bodyPr>`-less empty
-placeholders, and shapes positioned entirely outside the slide bounds, unless
-`hiddenContent` is set. Microsoft documents notes, invisible objects and off-slide text
+**Visibility.** Skip slides marked `show="0"` — or `show="false"`, since `ST_Boolean`
+is `1`/`0` *and* `true`/`false` and only Microsoft's writer picks the digits — shapes
+with `<a:bodyPr>`-less empty placeholders, and shapes positioned entirely outside the
+slide bounds, unless `hiddenContent` is set. Microsoft documents notes, invisible objects and off-slide text
 as hidden-content categories; extracting them by default would violate the contract.
 
 **Text**: `<a:p>` paragraphs of `<a:t>` runs; `<a:br>` is a newline; `<a:pPr lvl="n">`
 gives bullet depth. `<a:fld>` auto-numbers and dates are dropped. Shapes are separated
 by a blank line.
+
+**Whether a paragraph is a list item** is a resolution, not an attribute. PowerPoint
+writes no bullet on the paragraph: it comes from the shape's own `<a:lstStyle>`, then
+the layout placeholder's (matched by `idx`, else by type), then the master's
+`<p:txStyles>` — `titleStyle` for a title placeholder, `bodyStyle` for a body one,
+`otherStyle` for a shape that is not a placeholder. The first level to carry `buChar`,
+`buAutoNum` or `buNone` decides, `buNone` included. Both directions are load-bearing:
+reading only the paragraph finds no list in a deck that is all lists, and inheriting
+without asking *which* style applies bullets every caption and title on a deck whose
+text sits in plain text boxes — which is what tool-exported decks are made of.
 
 **Tables** are `<a:tbl>` → `<a:tr>`/`<a:tc>`. This is **best-effort flattening, not
 lossless** — Markdown has no rowspan or colspan. The stated policy: a horizontally

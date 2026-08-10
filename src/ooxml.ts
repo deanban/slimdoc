@@ -126,6 +126,26 @@ export function textOf(node: XmlNode): string {
   return node.children.reduce((text, c) => text + textOf(c), node.text);
 }
 
+/**
+ * `ST_Boolean`, which XSD spells four ways: `1`, `0`, `true`, `false`.
+ *
+ * PowerPoint writes the digits, so a deck from PowerPoint never exercises the
+ * words and a `=== '1'` comparison looks correct for years. Everything else that
+ * writes OOXML — an export from Keynote or Slides, a reporting tool built on a
+ * library — is free to write `true`, and then a hidden slide is shown and a
+ * merged cell speaks. That third-party variance is what this module is for, so
+ * the comparison belongs here rather than at each of its call sites.
+ *
+ * `undefined` back means the attribute was absent or was not a boolean at all,
+ * which callers distinguish from `false`.
+ */
+export function isTrue(value: string | undefined): boolean | undefined {
+  const normalised = value?.trim().toLowerCase();
+  if (normalised === '1' || normalised === 'true') return true;
+  if (normalised === '0' || normalised === 'false') return false;
+  return undefined;
+}
+
 export interface Relationship {
   type: string;
   target: string;

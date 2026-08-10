@@ -20,14 +20,14 @@
       "file": "deck-textboxes.pptx",
       "sha256": "19d1d03ae625763955e8af68e4721537e15ed31a9b3ee97aef5bbd71d379dc5d",
       "description": "A deck built almost entirely from plain text boxes rather than placeholders — 3 slides, ~95 non-empty paragraphs, none carrying bullet properties of its own.",
-      "proves": "Bullet inheritance must not over-apply. These paragraphs are non-placeholder shapes, so they resolve through the master's otherStyle, which carries no bullet — even though the same master's bodyStyle carries buChar. A naive 'inherit from the master' fix bullets all 95 lines."
+      "proves": "Bullet inheritance must not over-apply. These paragraphs are non-placeholder shapes, so they resolve through the master's otherStyle, which carries no bullet — even though the same master's bodyStyle carries buChar. A naive 'inherit from the master' fix bullets all 95 lines. Confirmed against this master: titleStyle carries buNone, bodyStyle carries buChar, otherStyle carries neither."
     },
     {
       "name": "deck-mixed",
       "file": "deck-mixed.pptx",
       "sha256": "b075f3fef7ee3c2d3ae61dd287272880b12f409ca95a4673db1c1c8fabd3766c",
-      "description": "12 slides, 4 charts with axis titles, 2 tables, 12 images, and paragraphs of all three bullet kinds: 14 explicit, 11 inheriting, 200 explicitly buNone.",
-      "proves": "Chart axis titles are visible slide text and must survive the default (they do not today). Bullet resolution must produce all three outcomes from one deck."
+      "description": "12 slides, 4 charts with axis titles, 2 tables, 12 images, and 186 paragraphs — every one of them in a plain text box, 14 carrying an explicit buChar.",
+      "proves": "Chart axis titles are visible slide text and must survive the default. And the deck exercises the explicit-bullet path against the new inheritance chain: exactly its 14 written bullets come out, no more. Measured, against the expectation this fixture was chosen on: it has no content placeholders at all, so it cannot demonstrate inheritance — nor can deck-textboxes or deck-hidden. A deck exported by a tool is made of text boxes, and test/fixtures/generated/inherited-bullets.pptx is what covers the placeholder chain."
     },
     {
       "name": "deck-hidden",

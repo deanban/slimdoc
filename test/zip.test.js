@@ -16,74 +16,14 @@ import test from 'node:test';
 
 import { readZipEntries } from '../dist/zip.js';
 import { DEFAULT_LIMITS } from '../dist/types.js';
+import { buildZip, deflated, stored } from './helpers/deck.js';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
-const STORED = 0;
-const DEFLATED = 8;
-
 const limits = (over = {}) => ({ ...DEFAULT_LIMITS, ...over });
 
-/**
- * Build an archive from `entries`, each `{ name, body, method, declared }`.
- * `body` is the stored bytes exactly as they go on disk; `declared` overrides
- * the uncompressed size written into the headers, which is how a lying archive
- * is expressed.
- */
-function buildZip(entries, { zip64 = false, comment = '' } = {}) {
-  const locals = [];
-  const centrals = [];
-  let offset = 0;
-
-  for (const { name, body, method = STORED, declared } of entries) {
-    const nameBytes = Buffer.from(name, 'latin1');
-    const uncompressed = declared ?? body.length;
-
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(method, 8);
-    local.writeUInt32LE(body.length, 18);
-    local.writeUInt32LE(uncompressed, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    locals.push(local, nameBytes, body);
-
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(method, 10);
-    central.writeUInt32LE(body.length, 20);
-    central.writeUInt32LE(uncompressed, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt32LE(offset, 42);
-    centrals.push(central, nameBytes);
-
-    offset += 30 + nameBytes.length + body.length;
-  }
-
-  const localBytes = Buffer.concat(locals);
-  const centralBytes = Buffer.concat(centrals);
-  const commentBytes = Buffer.from(comment, 'latin1');
-
-  const locator = Buffer.alloc(zip64 ? 20 : 0);
-  if (zip64) locator.writeUInt32LE(0x07064b50, 0);
-
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralBytes.length, 12);
-  eocd.writeUInt32LE(localBytes.length, 16);
-  eocd.writeUInt16LE(commentBytes.length, 20);
-
-  return Buffer.concat([localBytes, centralBytes, locator, eocd, commentBytes]);
-}
-
-const stored = (name, text) => ({ name, body: Buffer.from(text, 'utf8'), method: STORED });
-
-function deflated(name, text) {
-  return { name, body: deflateRawSync(Buffer.from(text, 'utf8')), method: DEFLATED };
-}
+const STORED = 0;
+const DEFLATED = 8;
 
 // --------------------------------------------------------------------------
 // reading
