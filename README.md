@@ -1,108 +1,146 @@
 # slimdoc
 
-Shrink any document — Word, Markdown, HTML, RTF or pasted text — into clean,
-token-cheap input for an LLM.
+**Documents are built for people and office apps. Prompts aren't.**
 
-Pasted documents arrive full of things a model gains nothing from: embedded profile
-photos, tab stops, stacks of blank lines, smart quotes, em-dashes, zero-width
-characters. `slimdoc` strips all of it and leaves the words.
+`slimdoc` shrinks Word files, PowerPoint decks, PDFs, Markdown, HTML, RTF, transcripts, and plain text into clean, compact, token-cheap input for an LLM.
+
 
 ```bash
 npx slimdoc report.docx | pbcopy
 ```
 
-## Install
+No embedded avatars. No repeated footer on every page. No 80-space layout padding.
+Just the text that is useful, in an order a model can work with.
+
+Less junk in the context window. More room for the actual job.
+
+## Token-saving scorecard
+
+| Input | Estimated tokens saved |
+|---|---:|
+| HTML | **93.0%** |
+| RTF | **75.9%** |
+| Transcript Text | **44.0%** |
+| DOCX File | **37.0%** |
+| Markdown | **30.1%** |
+
+These figures measure reduction only—not extraction fidelity. They are estimates from
+the project scorecard, and your documents will vary.
+
+## One command. A lot less prompt.
 
 ```bash
-npm install -g slimdoc      # then: slimdoc file.docx
-npx slimdoc file.docx       # or don't install at all
+slimdoc notes.docx                    # clean it; print Markdown to stdout
+slimdoc *.md --out-dir clean/         # process a folder's worth of files
+pbpaste | slimdoc | pbcopy            # clean whatever is on the clipboard
+slimdoc -c -C                         # same workflow, no pipes
+slimdoc meeting.docx -t -s            # tidy a transcript and show the savings
+slimdoc deck.pptx --chart-data        # include the numbers behind charts
+slimdoc report.pdf --pages 3-7        # send only the pages that matter
+slimdoc report.pdf --section-headings # keep page boundaries visible
 ```
 
-Node 18.17+. One dependency (`mammoth`, for Word files).
+Input can come from files, piped stdin, or the system clipboard. Output can go to
+stdout, a file, a directory, the clipboard, or JSON. That makes `slimdoc` useful at a
+terminal, inside a script, and as a small preprocessing step in a larger LLM pipeline.
 
-## Use it
+## What you get
 
-```bash
-slimdoc notes.docx                  # clean it, print to stdout
-slimdoc *.md --out-dir clean/       # many files at once
-pbpaste | slimdoc | pbcopy          # clean whatever you just copied
-slimdoc -c -C                       # same thing, without the pipes
-slimdoc meeting.docx -t -s          # a meeting transcript, with a size report
-```
+- **Cleaner context.** Images, base64 payloads, document chrome, invisible characters,
+  excessive whitespace, and repeated page or slide furniture are removed.
+- **Useful structure.** Tables remain tables. Lists remain lists. Code keeps its exact
+  whitespace. Pages and slides stay separate while they are cleaned.
+- **Less manual prep.** Point it at the file you already have. There is no copy-paste
+  cleanup ritual and no intermediate conversion step.
+- **Control when you need it.** Select pages, include hidden slide content, pull chart
+  series, preserve section labels, or choose how aggressively to compact the text.
+- **Receipts.** `--stats` shows before-and-after characters, lines, bytes, and estimated
+  tokens. Extraction warnings say what was omitted or approximated.
 
-Input comes from file arguments, piped stdin, or `--clipboard`.
+## Documents, handled on their own terms
 
-## Your files are not modified
+### Word, HTML, RTF, Markdown, and text
 
-By default `slimdoc` writes to stdout and leaves the input exactly as it found it.
-Nothing is overwritten unless you ask for it.
+The everyday cleanup is deliberately boring—and very effective.
 
-| | what happens to the original |
-|---|---|
-| `slimdoc notes.md` | untouched — result goes to stdout |
-| `slimdoc notes.md -o clean.md` | untouched — new file |
-| `slimdoc *.docx -D clean/` | untouched — new files in `clean/` |
-| `slimdoc notes.md -C` | untouched — result to the clipboard |
-| `slimdoc notes.md -w` | **overwritten in place** |
+`slimdoc` removes image payloads, avatars, Office metadata, zero-width characters,
+soft hyphens, stray control codes, trailing whitespace, tabs, runs of spaces, and
+stacks of blank lines. In the default `--balanced` mode it also normalizes smart
+punctuation to ASCII, unwraps hard-wrapped prose, compacts Markdown tables, and removes
+pointless backslash escapes left by Word conversion.
 
-`--write` is the only destructive option, and it refuses to run on a format it would
-corrupt:
+HTML gets a little more care. Scripts, styles, media containers, and raw markup go
+away. Links, lists, headings, emphasis, tables, inline code, and fenced code survive.
+Meaningful image captions stay as `[image: ...]`; filenames, `avatar`, and repetitive
+Office-generated alt-text disclaimers do not. Embedded code that is only available by
+URL leaves a useful `[embedded: ...]` marker instead of vanishing.
 
-```
-$ slimdoc report.docx -w
-slimdoc: report.docx: refusing to rewrite a docx file in place — use --out-dir
-```
+RTF is treated as content, not formatting archaeology. Picture blobs, font tables,
+color tables, headers, footers, and other control data are discarded. Unicode text and
+real tables come through.
 
-The output is Markdown text, so writing it into a `.docx` filename would leave you with
-a file Word cannot open and the original content gone. The same refusal covers `.rtf`
-and `.html`.
+### PowerPoint
 
-With `--out-dir` the extension is corrected to match the contents, so
-`report.docx` is written as `clean/report.md` rather than a `.docx` that isn't one.
+Decks are not bags of text boxes. `slimdoc` reads them in presentation order, one slide
+at a time.
 
-`slimdoc` emits Markdown text, never a Word file, so `--out` rejects a `.docx`,
-`.doc`, `.rtf` or `.pdf` target rather than writing a file your reader cannot open:
+- Titles lead their slides; body text, bullets, grouped shapes, and author-inserted
+  fields follow in a conservative reading order.
+- Hidden slides, off-canvas text, master/layout prompts, slide numbers, and automatic
+  dates stay out by default. Add `--hidden` when the hidden material is the point.
+- Tables become GitHub-flavored Markdown tables.
+- SmartArt becomes a nested list. Use `--no-diagram-text` to leave it out.
+- Chart titles, axis titles, categories, and series names are visible text, so they are
+  included by default. `--chart-data` adds cached series values as a table.
+- Footers, standing disclaimers, and other blocks repeated across most slides are kept
+  once instead of once per slide. `--no-running-headers` keeps every copy.
+- Meaningful image descriptions survive; image bytes and boilerplate captions do not.
+- Strict Open XML presentations are supported as well as the usual PowerPoint format.
 
-```
-$ slimdoc report.docx -o clean.docx
-slimdoc: slimdoc writes Markdown text, so a .docx file would not open — write to clean.md instead
-```
+Mixed or unsupported chart types are skipped conservatively and reported. An
+image-only or otherwise textless deck is reported too; it does not quietly produce an
+empty result and pretend everything worked.
 
-## What it removes
+Need three slides from a 200-slide deck? `--pages 8-10` reads the selected slides, not
+the whole deck's contents. Slide numbering still matches PowerPoint, including the
+positions held by hidden slides.
 
-Always, in every mode:
+### PDF
 
-- **Images, avatars and embedded media.** Data URIs, `<img>` tags, RTF `{\pict}` blobs,
-  orphaned base64. A meaningful caption survives as `[image: …]`; a profile photo does not.
-- Zero-width characters, soft hyphens, BOMs, stray control codes.
-- Trailing whitespace, tabs, runs of spaces, stacks of blank lines.
+PDF is the hard one. It stores glyphs at coordinates—not paragraphs, tables, or even a
+reliable reading order. `slimdoc` reconstructs carefully and says so.
 
-In the default `--balanced` mode it also folds smart quotes, em-dashes and ellipses to
-ASCII, unwraps hard-wrapped paragraphs, compacts Markdown tables, and removes the
-pointless backslash escapes that Word conversion leaves behind.
+- Two-column pages are read down the first column, then the second.
+- Headers and footers repeated across a document are kept once and suppressed after
+  that. Use `--no-running-headers` to retain every occurrence.
+- Hanging indents and coordinate padding are flattened so normal prose can unwrap
+  cleanly instead of masquerading as code.
+- Grid-like regions keep their alignment in fenced blocks. `slimdoc` does not invent a
+  Markdown table and risk putting a number under the wrong heading.
+- `--dehyphenate` rejoins words split across line breaks, such as `inter-` /
+  `national`. It is opt-in because no dictionary-free rule can distinguish every real
+  compound from a line-break hyphen.
+- `--pages 3-7,12` extracts only the pages you care about. `--section-headings` adds
+  `## Page 3` markers, and `--stats` breaks the result down page by page.
+- A partly scanned PDF keeps text pages and marks pages with no extractable text. A
+  fully scanned PDF is refused with an `ocrmypdf` hint instead of returning nothing.
 
-**Code blocks are never touched**, in any mode — whitespace carries meaning there.
-
-### Presets
-
-| | `--safe` | `--balanced` (default) | `--aggressive` |
-|---|---|---|---|
-| whitespace, invisibles, media | yes | yes | yes |
-| ASCII punctuation, unwrapping | no | yes | yes |
-| strip Markdown decoration, emoji | no | no | yes |
-
-`--aggressive` keeps every word but drops emphasis markers, link URLs and heading
-hashes. Any individual behaviour can be overridden — every flag has a `--no-`
-counterpart, e.g. `slimdoc --aggressive --no-strip-emoji`.
+Extraction from a PDF is necessarily an approximation. Preserving alignment is safer
+than asserting structure the file never contained.
 
 ## Meeting transcripts
 
-`--transcript` handles the exported-transcript formats: Microsoft Teams (including the
-"export to Word" version), Zoom, Google Meet, Otter, WebVTT and SRT.
+Exported meetings are spectacularly wasteful. Five lines of metadata and a base64
+profile photo can surround one sentence.
 
-A Teams export spends five lines and about 5 KB on every utterance:
+`--transcript` understands Microsoft Teams—including its Word export—Zoom, Google
+Meet, Otter, WebVTT, and SRT. It merges consecutive turns from the same speaker,
+shortens unambiguous names, keeps one useful timestamp per turn, removes duplicate
+captions, and drops join/leave/recording chatter.
 
-```
+This:
+
+```text
 [a 5 KB base64 profile photo]
 __Picard, Jean-Luc__
 0 minutes 43 seconds0:43
@@ -110,37 +148,120 @@ Picard, Jean-Luc 0 minutes 43 seconds
 Morning all, shall we get started?
 ```
 
-`slimdoc meeting.docx -t` turns each of those into:
+becomes this:
 
-```
+```text
 Jean-Luc [0:43]: Morning all, shall we get started?
 ```
 
-Consecutive turns by one speaker are merged, per-line timestamps drop to one per turn,
-and join/leave/recording chatter goes away. Without the flag, `slimdoc` notices the
-shape and says so rather than guessing.
+On a measured 14-minute Teams meeting exported to Word, transcript cleanup reduced a
+2,604-token image-free conversion to 1,641 cl100k tokens: **37% less context**. That is
+the honest comparison. Counting the removal of base64 avatars would make the result
+look enormous, but any competent converter should remove those before tokenization.
 
-Measured on a real 14-minute Teams meeting exported to Word:
+If a document looks like a transcript and `--transcript` is missing, `slimdoc` points
+it out rather than silently guessing.
 
-| | |
+## Tables and code do not get sacrificed
+
+Compacting a document is easy if structure is allowed to break. `slimdoc` does the
+slower, more useful thing.
+
+Tables from DOCX, PPTX, HTML, and RTF become GitHub-flavored Markdown tables with one
+row per line. Pipes inside cells are escaped. Multi-line cells are flattened. Merged
+cells have no Markdown equivalent, so their values are repeated across the span and the
+approximation is reported.
+
+Code blocks are never cleaned internally, in any preset. Indentation stays exact.
+Inline code keeps its backticks. If a code sample contains its own Markdown fence,
+`slimdoc` automatically uses a longer outer fence so the block remains valid.
+
+## Pick a cleanup level
+
+| | `--safe` | `--balanced` (default) | `--aggressive` |
+|---|---|---|---|
+| whitespace, invisible characters, media | yes | yes | yes |
+| ASCII punctuation and paragraph unwrapping | no | yes | yes |
+| remove Markdown decoration and emoji | no | no | yes |
+
+`--safe` is the light touch. `--balanced` is the useful default. `--aggressive` keeps
+the words but drops emphasis markers, link URLs, heading hashes, and emoji to squeeze
+harder.
+
+Every individual behavior can be overridden, and every flag has a `--no-` counterpart:
+
+```bash
+slimdoc notes.md --aggressive --no-strip-emoji
+slimdoc page.html --safe --unwrap --ascii
+```
+
+## Your files stay yours
+
+The default is non-destructive. `slimdoc` writes to stdout and leaves the source file
+exactly where it found it.
+
+| Command | What happens to the original |
 |---|---|
-| `.docx` on disk | 158.2 kB |
-| naive Word→Markdown conversion | 893,152 chars (98.9% base64 avatars) |
-| `slimdoc meeting.docx` | 10,011 chars |
-| `slimdoc meeting.docx -t` | 6,910 chars — **~1,878 tokens** |
+| `slimdoc notes.md` | untouched; result goes to stdout |
+| `slimdoc notes.md -o clean.md` | untouched; a new file is created |
+| `slimdoc *.docx -D clean/` | untouched; one Markdown file per input |
+| `slimdoc notes.md -C` | untouched; result goes to the clipboard |
+| `slimdoc notes.md -w` | **overwritten in place** |
 
-## Guarantees
+`--write` is the only destructive option. It refuses formats that would be corrupted by
+in-place rewriting:
 
-Enforced by the test suite, not just intended:
+```text
+$ slimdoc report.docx -w
+slimdoc: report.docx: refusing to rewrite a docx file in place — use --out-dir
+```
 
-- **No word is ever lost** in default mode. (Verified word-for-word on real documents.)
-- **Idempotent** — cleaning twice gives the same result as cleaning once.
-- Two paragraphs are never glued into one.
-- Fenced, indented and inline code survives byte-identical.
+The output is Markdown text, never a Word, PowerPoint, or PDF file. For the same reason,
+`--out` rejects binary-looking targets such as `clean.docx` instead of creating a file
+Word cannot open.
+
+Batch output is collision-safe. `a/report.pdf` and `b/report.pdf` become
+`clean/report.md` and `clean/b-report.md`; names that differ only by case are treated as
+collisions on macOS and Windows too. Nothing is silently overwritten.
+
+## Install
+
+```bash
+npm install -g slimdoc      # then: slimdoc file.docx
+npx slimdoc file.docx       # or run it without installing
+```
+
+Requires Node 22 or newer. A global install also provides `slim` as a shorter alias.
+
+There are three runtime dependencies: `mammoth` for Word, `unpdf` for PDF, and `saxes`
+for OOXML. They load only when the format needs them, so cleaning a Markdown or text
+file does not pay to initialize document readers it will never use.
+
+## Formats
+
+First-class inputs:
+
+- Word: `.docx`
+- PowerPoint: `.pptx`, `.pptm`, `.potx`
+- PDF: `.pdf`
+- Web and rich text: `.html`, `.htm`, `.rtf`
+- Text-shaped formats: `.md`, `.markdown`, `.mdx`, `.txt`, `.text`, `.log`, `.csv`,
+  `.tsv`, `.json`, `.yaml`, `.yml`, and other valid UTF-8 or UTF-16 text
+
+Detection uses magic bytes as well as the extension, so extensionless files and binary
+input piped through stdin still work.
+
+Legacy or out-of-scope formats are refused with a useful conversion route: `.doc` and
+`.ppt` should be re-saved as `.docx` and `.pptx`; `.xls`/`.xlsx` should be exported as
+CSV; Keynote and OpenDocument presentations should be exported as PPTX or PDF.
+
+Resource limits are on by default: 100 MB input, 500 selected pages, bounded ZIP
+inflation, and bounded PDF items per page. The stdin and clipboard paths enforce the
+same input limit while data arrives instead of buffering an unlimited payload first.
 
 ## Options
 
-```
+```text
 Input
   -c, --clipboard         read the system clipboard instead of files/stdin
 Output
@@ -158,31 +279,64 @@ Fine control (every flag has a --no- counterpart)
       --max-blank-lines <n>                     --keep-tabs
 Documents
   -t, --transcript        tidy a meeting transcript
+      --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
+      --section-headings  emit `## Page 3` / `## Slide 3 — Title` markers
+      --hidden            include hidden slides and off-slide text
+      --chart-data        add PPTX chart series numbers as tables
+      --no-diagram-text   skip SmartArt text
+      --dehyphenate       rejoin words split across PDF line breaks
+      --no-tables         do not preserve aligned PDF regions as code blocks
+      --no-running-headers  keep text repeated on every page / slide
+      --max-pages <n>     cap on the pages actually read (default 500)
 Other
   -s, --stats             print a before/after report to stderr
   -q, --quiet
   -h, --help    -V, --version
 ```
 
-`--stats` prints to stderr, so `slimdoc doc.docx | pbcopy` stays clean.
-Token counts are a heuristic estimate, not a real tokenizer.
+`--stats` writes to stderr, so the cleaned document on stdout stays pipe-safe. Its token
+count is a calibrated heuristic, not a billing-grade tokenizer.
 
-## Formats
+## What is guaranteed—and what is not
 
-`.docx`, `.md`, `.html`, `.rtf`, `.txt`, and anything else that is UTF-8 text.
-Detection uses magic bytes as well as the extension, so an extension-less file works.
+The cleaner has hard promises, enforced by the test suite:
 
-Legacy `.doc` and `.pdf` are not supported; `slimdoc` tells you what to run instead
-(`textutil -convert docx`, `pdftotext file.pdf - | slimdoc`).
+- Cleaning does not drop words across headings, lists, tables, quotes, and emphasis in
+  any preset.
+- Cleaning twice gives the same result as cleaning once.
+- Two paragraphs are not glued together.
+- Fenced, indented, and inline code survives byte-for-byte.
+
+Extraction is a different stage. It intentionally leaves out image payloads, repeated
+page/slide furniture, hidden slides, and full chart series unless requested. PDF layout
+is reconstructed. Merged cells are flattened. Each of those decisions is surfaced in
+warnings or stats where it matters.
+
+The promise is not a magical round trip from every office format. It is more useful:
+visible, non-duplicated text in a conservative reading order, with the lossy edges made
+explicit.
 
 ## Library use
 
 ```js
-import { clean, extractFromFile } from 'slimdoc';
+import { cleanDocument, extractFromFile } from 'slimdoc';
 
-const doc = await extractFromFile('meeting.docx');
-const text = clean(doc.text, { preset: 'aggressive', transcript: true });
+const doc = await extractFromFile('deck.pptx', {
+  chartData: true,
+  pages: [[2, 5]],
+});
+
+const { text, stats, sections } = cleanDocument(doc, {
+  preset: 'aggressive',
+});
 ```
+
+Use `cleanDocument` rather than `clean` for PDFs and presentations. It cleans each page
+or slide independently before joining them, which stops the end of one section from
+being unwrapped into the start of the next.
+
+The package also exports format detection, extraction from buffers, transcript tools,
+token estimation, stats helpers, presets, and typed cleanup/extraction options.
 
 ## License
 

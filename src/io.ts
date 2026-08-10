@@ -1,5 +1,18 @@
 import { spawn } from 'node:child_process';
 
+import { UnsupportedFormatError } from './errors.js';
+import { formatBytes } from './tokens.js';
+
+/**
+ * The same refusal `extract.ts` raises for an oversized file, worded the same way
+ * and carrying the same `oversized` tag, so the CLI reports a pipe and a path
+ * identically. The size is not quoted because a stream that is still arriving has
+ * no size yet — only the fact that it has passed the limit.
+ */
+function oversized(limit: number): UnsupportedFormatError {
+  return new UnsupportedFormatError(`is over the ${formatBytes(limit)} input limit`, 'oversized');
+}
+
 interface ClipboardTool {
   cmd: string;
   args: string[];
@@ -20,18 +33,29 @@ export function hasPipedStdin(): boolean {
 /**
  * Read all of stdin as bytes, or `null` when stdin is an interactive terminal.
  * Bytes rather than text so a piped `.docx` still reaches the format detector intact.
+ *
+ * `limit` is checked as the chunks arrive, not after. `extractFromFile` takes the
+ * size from `stat` before the read and its comment explains why — "by then the
+ * bytes it was meant to refuse are already in memory" — and this path did exactly
+ * that, buffering the whole of stdin and validating it afterwards. A pipe has no
+ * size to stat, so the running total is the only place the check can go.
  */
-export async function readStdinBuffer(): Promise<Buffer | null> {
+export async function readStdinBuffer(limit = Infinity): Promise<Buffer | null> {
   if (!hasPipedStdin()) return null;
   const chunks: Buffer[] = [];
+  let read = 0;
+
   for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    read += buf.length;
+    if (read > limit) throw oversized(limit);
+    chunks.push(buf);
   }
   return Buffer.concat(chunks);
 }
 
-export async function readStdin(): Promise<string | null> {
-  const buf = await readStdinBuffer();
+export async function readStdin(limit = Infinity): Promise<string | null> {
+  const buf = await readStdinBuffer(limit);
   return buf === null ? null : stripBom(buf.toString('utf8'));
 }
 
@@ -39,14 +63,29 @@ export async function readStdin(): Promise<string | null> {
  * Run `cmd` with `args`, optionally feeding `input` through the child's stdin.
  * User text is never interpolated into a shell string — there is no shell.
  */
-function runTool(tool: ClipboardTool, input?: string): Promise<string> {
+function runTool(tool: ClipboardTool, input?: string, limit = Infinity): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(tool.cmd, tool.args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let settled = false;
+    let read = 0;
 
-    child.stdout.on('data', (d: Buffer) => out.push(d));
+    child.stdout.on('data', (d: Buffer) => {
+      // Bounded as it arrives, for the same reason stdin is: a clipboard holding
+      // a pasted spreadsheet is not small, and buffering all of it to measure it
+      // afterwards is the one order in which the limit cannot do its job. The
+      // child is killed rather than drained — there is nothing left to read.
+      read += d.length;
+      if (read > limit) {
+        if (settled) return;
+        settled = true;
+        child.kill();
+        reject(oversized(limit));
+        return;
+      }
+      out.push(d);
+    });
     child.stderr.on('data', (d: Buffer) => err.push(d));
 
     child.on('error', (e: NodeJS.ErrnoException) => {
@@ -121,10 +160,14 @@ function missingToolError(tools: ClipboardTool[]): Error {
   return new Error(`no clipboard tool available (tried: ${names})${hint}`);
 }
 
-async function firstWorkingTool(tools: ClipboardTool[], input?: string): Promise<string> {
+async function firstWorkingTool(
+  tools: ClipboardTool[],
+  input?: string,
+  limit = Infinity,
+): Promise<string> {
   for (const tool of tools) {
     try {
-      return await runTool(tool, input);
+      return await runTool(tool, input, limit);
     } catch (e) {
       if (e instanceof ToolMissingError) continue;
       throw e;
@@ -133,8 +176,8 @@ async function firstWorkingTool(tools: ClipboardTool[], input?: string): Promise
   throw missingToolError(tools);
 }
 
-export async function readClipboard(): Promise<string> {
-  return stripBom(await firstWorkingTool(pasteTools()));
+export async function readClipboard(limit = Infinity): Promise<string> {
+  return stripBom(await firstWorkingTool(pasteTools(), undefined, limit));
 }
 
 export async function writeClipboard(text: string): Promise<void> {

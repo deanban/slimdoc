@@ -5,9 +5,11 @@ dist/
 
 # Personal / real-world sample documents used for local verification only
 test/fixtures/local/
+.review/*
 
 # Internal build-process artifacts: specs, task lists, agent notes, scratch output
 SPEC.md
+SPEC-pdf-pptx.md
 TASKS.md
 NOTES.md
 PLAN.md

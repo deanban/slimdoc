@@ -232,6 +232,54 @@ test('escaped pipes inside a table cell survive compaction', () => {
   assert.equal(out, '| a \\| b | c |\n| --- | --- |\n');
 });
 
+const BOUNDED_TABLE = [
+  'Intro prose',
+  '',
+  '| A | B |',
+  '| --- | --- |',
+  '| C | D |',
+  '',
+  'Trailing prose',
+  '',
+].join('\n');
+
+test('a table keeps the blank line at its boundary for every preset', () => {
+  // Without it the prose above pairs with the delimiter row and the prose below is
+  // read as a fourth body row, so the table silently swallows both.
+  for (const preset of PRESETS) {
+    const out = clean(BOUNDED_TABLE, { preset });
+    assert.ok(out.includes('Intro prose\n\n| A | B |'), `${preset}: ${JSON.stringify(out)}`);
+    assert.ok(out.includes('| C | D |\n\nTrailing prose'), `${preset}: ${JSON.stringify(out)}`);
+  }
+  // maxBlankLines 0 squeezes every other blank run, but not this one.
+  assert.equal(clean(BOUNDED_TABLE, { preset: 'aggressive', maxBlankLines: 0 }), BOUNDED_TABLE);
+});
+
+test('idempotent at maxBlankLines 0 with a table present', () => {
+  const input = [
+    'First paragraph here.', '', 'Second paragraph here.', '',
+    '| A | B |', '| --- | --- |', '| C | D |', '',
+    'Third paragraph here.', '', 'Fourth paragraph here.', '',
+  ].join('\n');
+  for (const preset of PRESETS) {
+    const opts = { preset, maxBlankLines: 0 };
+    const once = clean(input, opts);
+    assert.ok(once.includes('| C | D |\n\nThird paragraph'), `${preset}: ${JSON.stringify(once)}`);
+    assert.equal(clean(once, opts), once, `preset ${preset} is not idempotent`);
+    // The surviving blank must not be read as paragraph structure on the second run.
+    assert.ok(!clean(once, opts).includes('here. Second'), `${preset} glued two paragraphs`);
+  }
+});
+
+test('text without a table is unaffected by the table-boundary rule', () => {
+  const input = 'First paragraph here.\n\nSecond paragraph here.\n\n- a list item\n\n> a quoted line\n';
+  for (const preset of PRESETS) {
+    const out = clean(input, { preset, maxBlankLines: 0 });
+    assert.ok(!out.includes('\n\n'), `${preset} kept a blank line: ${JSON.stringify(out)}`);
+    assert.equal(out.split('\n').filter((l) => l !== '').length, 4, JSON.stringify(out));
+  }
+});
+
 test('stripMarkdown keeps the words and the list structure', () => {
   const input = [
     '# Heading',

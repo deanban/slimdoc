@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head><style>body { color: red; }</style></head>
+<body>
+<h1>Writing a Markdown fence</h1>
+
+<p>Use <code>slimdoc --stats</code> to see the token delta.</p>
+
+<pre><code class="language-python">def warp_factor(v):
+    if v &gt; 9:
+        return "subspace stress"
+    return "nominal"
+</code></pre>
+
+<p>A fence inside a fence needs a longer outer fence:</p>
+
+<pre>Example:
+```
+inner block
+```
+done</pre>
+
+<p>A code block that lives outside &lt;pre&gt;:</p>
+
+<div class="highlight-source">def broken(x):
+    return x + 1
+</div>
+
+<p>An escaped sample must survive, but the page's own script must not:</p>
+
+<pre>&lt;script&gt;alert('this is a sample')&lt;/script&gt;</pre>
+
+<script>window.tracking = 'this must vanish';</script>
+
+<p>Full source on GitHub:</p>
+<iframe src="https://gist.github.com/picard/1234abcd"></iframe>
+
+<p>And an unrelated embed that should still be dropped:</p>
+<iframe src="https://www.youtube.com/embed/xyz"></iframe>
+</body>
+</html>

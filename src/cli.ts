@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { realpathSync, statSync } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, dirname, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
 
-import { cleanWithStats } from './clean.js';
-import { extractFromBuffer, extractFromFile, UnsupportedFormatError } from './extract.js';
+import { parseInvocation, USAGE, UsageError, validate, type Invocation } from './cli-options.js';
+import { dim, label, num, onDiskSize, reportStats, writeErr } from './cli-report.js';
+import { messageOf, UnsupportedFormatError } from './errors.js';
+import { extractFromBuffer, extractFromFile } from './extract.js';
 import { readClipboard, readStdinBuffer, writeClipboard } from './io.js';
-import { formatBytes } from './tokens.js';
+import { cleanDocument, type SectionedDoc, type SectionStats } from './sections.js';
 import { looksLikeTranscript } from './transcript.js';
-import { resolveOptions } from './types.js';
-import type { CleanOptions, ExtractedDoc, Preset, Stats } from './types.js';
+import { resolveExtractOptions, type SourceFormat, type Stats } from './types.js';
 
 const HELP = `slimdoc [file...] [options]
 
@@ -46,6 +46,15 @@ Fine control (override the preset; every flag has a --no- counterpart)
 Documents
   -t, --transcript        tidy a meeting transcript: drop per-line timestamps and
                           join/leave noise, merge consecutive turns by one speaker
+      --pages <range>     3-7,12 — pages (PDF) or slides (PPTX)
+      --section-headings  emit \`## Page 3\` / \`## Slide 3 — Title\` markers
+      --hidden            include hidden slides and off-slide text
+      --chart-data        add PPTX chart series numbers as tables
+      --no-diagram-text   skip SmartArt text
+      --dehyphenate       rejoin words split across PDF line breaks
+      --no-tables         do not preserve aligned PDF regions as code blocks
+      --no-running-headers  keep text repeated on every page / slide
+      --max-pages <n>     cap on the pages actually read (default 500)
 Other
   -s, --stats             print a before/after report to stderr
   -q, --quiet             suppress warnings and the stats banner
@@ -53,203 +62,6 @@ Other
 
 Token counts are a heuristic estimate, not a real tokenizer.
 `;
-
-const USAGE = 'usage: slimdoc [file...] [options]   (slimdoc --help for the full list)';
-
-/** Keys of CleanOptions that are plain booleans, so `--x` / `--no-x` can drive them. */
-type BooleanCleanKey = {
-  [K in keyof CleanOptions]: CleanOptions[K] extends boolean ? K : never;
-}[keyof CleanOptions];
-
-const CLEAN_FLAGS: Record<string, BooleanCleanKey> = {
-  unwrap: 'unwrap',
-  ascii: 'asciiPunctuation',
-  'strip-markdown': 'stripMarkdown',
-  'strip-emoji': 'stripEmoji',
-  'preserve-code': 'preserveCode',
-  'compact-tables': 'compactTables',
-  'normalize-unicode': 'normalizeUnicode',
-  'unescape-markdown': 'unescapeMarkdown',
-  'strip-media': 'stripMedia',
-  'tabs-to-spaces': 'tabsToSpaces',
-  transcript: 'transcript',
-};
-
-const PRESET_FLAGS: Record<string, Preset> = {
-  safe: 'safe',
-  balanced: 'balanced',
-  aggressive: 'aggressive',
-};
-
-/** Boolean CLI switches whose long name is also their field name. */
-const CLI_FLAGS = ['clipboard', 'write', 'copy', 'json', 'stats', 'quiet', 'help', 'version'] as const;
-type CliFlag = (typeof CLI_FLAGS)[number];
-
-type Invocation = Record<CliFlag, boolean> & {
-  cleanOpts: CleanOptions;
-  files: string[];
-  out: string | undefined;
-  outDir: string | undefined;
-};
-
-function isCliFlag(name: string): name is CliFlag {
-  return (CLI_FLAGS as readonly string[]).includes(name);
-}
-
-type OptionSpec = { type: 'boolean' | 'string'; short?: string };
-
-function optionSpecs(): Record<string, OptionSpec> {
-  const specs: Record<string, OptionSpec> = {
-    clipboard: { type: 'boolean', short: 'c' },
-    out: { type: 'string', short: 'o' },
-    'out-dir': { type: 'string', short: 'D' },
-    write: { type: 'boolean', short: 'w' },
-    copy: { type: 'boolean', short: 'C' },
-    json: { type: 'boolean', short: 'j' },
-    'max-blank-lines': { type: 'string' },
-    'keep-tabs': { type: 'boolean' },
-    transcript: { type: 'boolean', short: 't' },
-    stats: { type: 'boolean', short: 's' },
-    quiet: { type: 'boolean', short: 'q' },
-    help: { type: 'boolean', short: 'h' },
-    version: { type: 'boolean', short: 'V' },
-  };
-  for (const name of [...Object.keys(CLEAN_FLAGS), ...Object.keys(PRESET_FLAGS)]) {
-    specs[name] ??= { type: 'boolean' };
-    specs[`no-${name}`] = { type: 'boolean' };
-  }
-  for (const name of [...CLI_FLAGS, 'keep-tabs']) {
-    specs[`no-${name}`] = { type: 'boolean' };
-  }
-  return specs;
-}
-
-interface ParsedToken {
-  kind: string;
-  name?: string;
-  value?: string | undefined;
-}
-
-class UsageError extends Error {}
-
-/**
- * Parse argv by walking the token stream rather than the values map: order decides
- * `--unwrap --no-unwrap`, while a preset only ever sets `preset`, so an explicit
- * flag beats the preset no matter which side of it the flag appears on.
- */
-function parseInvocation(argv: string[]): Invocation {
-  let parsed;
-  try {
-    parsed = parseArgs({
-      args: argv,
-      options: optionSpecs(),
-      allowPositionals: true,
-      strict: true,
-      tokens: true,
-    });
-  } catch (e) {
-    throw new UsageError(messageOf(e));
-  }
-
-  const overrides: Partial<CleanOptions> = {};
-  const inv = {
-    cleanOpts: resolveOptions(),
-    files: parsed.positionals,
-    out: undefined,
-    outDir: undefined,
-    ...Object.fromEntries(CLI_FLAGS.map((f) => [f, false])),
-  } as Invocation;
-
-  for (const token of parsed.tokens as ParsedToken[]) {
-    if (token.kind !== 'option' || token.name === undefined) continue;
-    const negated = token.name.startsWith('no-');
-    const name = negated ? token.name.slice(3) : token.name;
-    const on = !negated;
-
-    const cleanKey = CLEAN_FLAGS[name];
-    if (cleanKey !== undefined) {
-      overrides[cleanKey] = on;
-      continue;
-    }
-    const preset = PRESET_FLAGS[name];
-    if (preset !== undefined) {
-      if (on) overrides.preset = preset;
-      continue;
-    }
-
-    if (isCliFlag(name)) {
-      inv[name] = on;
-      continue;
-    }
-
-    switch (name) {
-      case 'keep-tabs':
-        overrides.tabsToSpaces = !on;
-        break;
-      case 'max-blank-lines':
-        overrides.maxBlankLines = parseCount(token.value);
-        break;
-      case 'out':
-        inv.out = token.value;
-        break;
-      case 'out-dir':
-        inv.outDir = token.value;
-        break;
-      default:
-        throw new UsageError(`unknown option --${token.name}`);
-    }
-  }
-
-  inv.cleanOpts = resolveOptions(overrides);
-  return inv;
-}
-
-function parseCount(value: string | undefined): number {
-  const n = Number(value);
-  if (value === undefined || value.trim() === '' || !Number.isInteger(n) || n < 0) {
-    throw new UsageError(`--max-blank-lines needs a whole number >= 0 (got "${value ?? ''}")`);
-  }
-  return n;
-}
-
-function validate(inv: Invocation): void {
-  const noFiles = inv.files.length === 0;
-  const hasOut = inv.out !== undefined;
-  const hasOutDir = inv.outDir !== undefined;
-  const problems: Array<[boolean, string]> = [
-    [hasOut && inv.files.length > 1, '--out takes a single input; use --out-dir for several files'],
-    [hasOut && hasOutDir, '--out and --out-dir cannot be combined'],
-    [inv.write && hasOut, '--write and --out cannot be combined'],
-    [inv.write && hasOutDir, '--write and --out-dir cannot be combined'],
-    [inv.write && noFiles, '--write needs file arguments; there is nothing to rewrite'],
-    [inv.clipboard && !noFiles, '--clipboard cannot be combined with file arguments'],
-    [inv.json && (inv.write || hasOutDir), '--json cannot be combined with --write or --out-dir'],
-  ];
-  for (const [bad, message] of problems) {
-    if (bad) throw new UsageError(message);
-  }
-  if (inv.out !== undefined) rejectBinaryTarget(inv.out);
-}
-
-/** Extensions whose readers expect a container, not the Markdown text slimdoc emits. */
-const NOT_A_TEXT_TARGET = ['.docx', '.doc', '.rtf', '.pdf', '.odt', '.pages'];
-
-/**
- * Writing text into a `.docx` name produces a file Word opens with "unreadable content".
- * --write and --out-dir already guard this; --out has to as well.
- */
-function rejectBinaryTarget(target: string): void {
-  const ext = extname(target).toLowerCase();
-  if (!NOT_A_TEXT_TARGET.includes(ext)) return;
-  const suggestion = `${target.slice(0, target.length - ext.length)}.md`;
-  throw new UsageError(
-    `slimdoc writes Markdown text, so a ${ext} file would not open — write to ${basename(suggestion)} instead`,
-  );
-}
-
-function messageOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 function inputErrorMessage(e: unknown): string {
   if (e instanceof UnsupportedFormatError) return e.message;
@@ -260,130 +72,107 @@ function inputErrorMessage(e: unknown): string {
   return messageOf(e);
 }
 
-function writeErr(line: string): void {
-  process.stderr.write(`${line}\n`);
-}
-
-function colourEnabled(): boolean {
-  return process.stderr.isTTY === true && !process.env['NO_COLOR'];
-}
-
-function dim(text: string): string {
-  return colourEnabled() ? `\u001b[2m${text}\u001b[0m` : text;
-}
-
-function num(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
-function pct(before: number, after: number): string {
-  if (before === 0) return '0%';
-  const p = Math.round(((after - before) / before) * 100);
-  return `${p > 0 ? '+' : ''}${p}%`;
-}
-
-function statsLine(s: Stats): string {
-  return (
-    `${num(s.chars.before)} chars -> ${num(s.chars.after)} (${pct(s.chars.before, s.chars.after)})  ` +
-    `~${num(s.tokens.before)} -> ~${num(s.tokens.after)} tokens (${pct(s.tokens.before, s.tokens.after)})`
-  );
+/**
+ * What a cleaned document should be called on disk.
+ *
+ * The decision is the format slimdoc *read*, not a list of extensions to rewrite.
+ * A list is what was here before, and PDF was never added to it, so a cleaned PDF
+ * went back out under a `.pdf` name no reader can open — while `--out` refused
+ * that exact target and the README promised the extension was corrected.
+ *
+ * `refusesInPlace` already draws this line for `--write`: a text or Markdown
+ * source is still text or Markdown after cleaning and keeps its name, `.csv` and
+ * `.json` included. Everything else became Markdown-ish text on the way through
+ * and is named for what it now holds. Sharing the predicate is what stops the two
+ * output paths from disagreeing again the next time a format lands.
+ */
+function outputName(source: string, format: SourceFormat): string {
+  if (source.startsWith('<')) return `${source.replace(/[<>]/g, '')}.md`;
+  const base = basename(source);
+  const ext = extname(base);
+  if (ext !== '' && !convertsToMarkdown(format)) return base;
+  return `${base.slice(0, base.length - ext.length)}.md`;
 }
 
 /**
- * `stats.chars.before` counts the text we extracted, which for a .docx is measured after
- * embedded images were discarded — and those images are usually most of the file. Without
- * naming the on-disk size the report silently omits the largest saving the tool makes.
+ * Output names for a whole run, with collisions resolved rather than overwritten.
+ *
+ * `reports/q1/summary.pdf` and `reports/q2/summary.pdf` are one ordinary glob
+ * apart, and writing both to `summary.md` destroys the first result invisibly:
+ * the run succeeds, and the file that survives looks correct. The containing
+ * directory is what the user distinguished them by, so it is what disambiguates
+ * them here. First input wins the plain name; later ones take the prefix.
+ *
+ * Collisions are tracked case-insensitively because the filesystem underneath is
+ * usually case-insensitive. `Report.pdf` and `report.pdf` produce two names that
+ * differ as strings, so an exact-match check called them distinct and let macOS
+ * and Windows do the overwriting this function exists to prevent — the same
+ * silent loss, one layer down, on the platforms most users are on.
  */
-function sourceSizeLine(bytes: number | undefined, after: number): string {
-  if (bytes === undefined) return '';
-  return `${formatBytes(bytes)} on disk -> ${formatBytes(after)} of text\n`;
-}
+function outputNames(docs: SectionedDoc[]): Map<string, string> {
+  const names = new Map<string, string>();
+  const taken = new Set<string>();
+  const claim = (name: string): boolean => !taken.has(name.toLowerCase());
 
-/** Byte size of the input file, or undefined for stdin, clipboard, or an unreadable path. */
-function onDiskSize(source: string): number | undefined {
-  if (source.startsWith('<')) return undefined;
-  try {
-    return statSync(source).size;
-  } catch {
-    return undefined;
+  for (const { source, format } of docs) {
+    const preferred = outputName(source, format);
+    let name = preferred;
+    if (!claim(name)) {
+      const parent = basename(dirname(source));
+      const ext = extname(preferred);
+      const stem = preferred.slice(0, preferred.length - ext.length);
+      name = parent === '' || parent === '.' ? preferred : `${parent}-${stem}${ext}`;
+      for (let n = 2; !claim(name); n++) name = `${stem}-${n}${ext}`;
+    }
+    taken.add(name.toLowerCase());
+    names.set(source, name);
   }
-}
-
-function label(source: string): string {
-  return source.startsWith('<') ? source : basename(source);
-}
-
-/** Cleaned output is Markdown-ish text, so a binary/markup source gets a `.md` name. */
-function outputName(source: string): string {
-  if (source.startsWith('<')) return `${source.replace(/[<>]/g, '')}.md`;
-  const base = basename(source);
-  const ext = extname(base).toLowerCase();
-  const rewritten = ['.docx', '.rtf', '.html', '.htm', ''];
-  return rewritten.includes(ext) ? `${base.slice(0, base.length - ext.length)}.md` : base;
+  return names;
 }
 
 interface Result {
-  doc: ExtractedDoc;
+  doc: SectionedDoc;
   text: string;
   stats: Stats;
-  /** Size of the original file, when the input came from disk. */
+  sections: SectionStats[];
+  source: string;
   sourceBytes?: number;
 }
 
-async function collect(inv: Invocation): Promise<{ docs: ExtractedDoc[]; failed: boolean }> {
-  const docs: ExtractedDoc[] = [];
+async function collect(inv: Invocation): Promise<{ docs: SectionedDoc[]; failed: boolean }> {
+  const docs: SectionedDoc[] = [];
   let failed = false;
 
+  const extract = inv.extractOpts;
+  // The same cap a file is refused by, applied where the bytes enter rather than
+  // after they are all in memory: neither a pipe nor a clipboard has a size to
+  // stat, so this is the only place the limit can be enforced for them.
+  const { maxInputBytes } = resolveExtractOptions(extract).limits;
+
   if (inv.clipboard) {
-    const text = await readClipboard();
-    const doc = await extractFromBuffer(Buffer.from(text, 'utf8'));
+    const text = await readClipboard(maxInputBytes);
+    const doc = await extractFromBuffer(Buffer.from(text, 'utf8'), { extract });
     docs.push({ ...doc, source: '<clipboard>' });
     return { docs, failed };
   }
 
   if (inv.files.length === 0) {
-    const buf = await readStdinBuffer();
+    const buf = await readStdinBuffer(maxInputBytes);
     if (buf === null) throw new UsageError('no input — give a file, pipe stdin, or use --clipboard');
-    const doc = await extractFromBuffer(buf);
+    const doc = await extractFromBuffer(buf, { extract });
     docs.push({ ...doc, source: '<stdin>' });
     return { docs, failed };
   }
 
   for (const file of inv.files) {
     try {
-      docs.push(await extractFromFile(file));
+      docs.push(await extractFromFile(file, extract));
     } catch (e) {
       writeErr(`slimdoc: ${file}: ${inputErrorMessage(e)}`);
       failed = true;
     }
   }
   return { docs, failed };
-}
-
-function reportStats(results: Result[]): void {
-  if (results.length === 1) {
-    const only = results[0];
-    if (only) {
-      writeErr(dim(sourceSizeLine(only.sourceBytes, only.stats.bytes.after) + statsLine(only.stats)));
-    }
-    return;
-  }
-  const total: Stats = {
-    chars: { before: 0, after: 0 },
-    bytes: { before: 0, after: 0 },
-    lines: { before: 0, after: 0 },
-    tokens: { before: 0, after: 0 },
-    savedPct: 0,
-  };
-  for (const r of results) {
-    for (const key of ['chars', 'bytes', 'lines', 'tokens'] as const) {
-      total[key].before += r.stats[key].before;
-      total[key].after += r.stats[key].after;
-    }
-    const disk = r.sourceBytes === undefined ? '' : `${formatBytes(r.sourceBytes)} on disk, `;
-    writeErr(dim(`${label(r.doc.source)}: ${disk}${statsLine(r.stats)}`));
-  }
-  writeErr(dim(`total: ${statsLine(total)}`));
 }
 
 function joinResults(results: Result[]): string {
@@ -412,9 +201,18 @@ function jsonPayload(results: Result[]): string {
   return `${JSON.stringify(body, null, 2)}\n`;
 }
 
+/**
+ * True when reading this format produced Markdown-ish text rather than something
+ * still of the same kind. Such a document cannot be written back over its source,
+ * and must not keep a name that claims it is still a deck, a PDF or a web page.
+ */
+function convertsToMarkdown(format: SourceFormat): boolean {
+  return format !== 'text' && format !== 'markdown';
+}
+
 /** True when rewriting the input in place would destroy a file we cannot regenerate. */
-function refusesInPlace(doc: ExtractedDoc): boolean {
-  return doc.format !== 'text' && doc.format !== 'markdown';
+function refusesInPlace(doc: SectionedDoc): boolean {
+  return convertsToMarkdown(doc.format);
 }
 
 async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
@@ -432,8 +230,14 @@ async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
     }
   } else if (inv.outDir !== undefined) {
     await mkdir(inv.outDir, { recursive: true });
+    const names = outputNames(results.map((r) => r.doc));
     for (const r of results) {
-      await writeFile(join(inv.outDir, outputName(r.doc.source)), r.text, 'utf8');
+      const preferred = outputName(r.doc.source, r.doc.format);
+      const name = names.get(r.doc.source) ?? preferred;
+      if (!inv.quiet && name !== preferred) {
+        writeErr(dim(`slimdoc: ${label(r.doc.source)}: written as ${name} to avoid overwriting another result`));
+      }
+      await writeFile(join(inv.outDir, name), r.text, 'utf8');
     }
   } else if (inv.out !== undefined) {
     await writeFile(inv.out, payload, 'utf8');
@@ -451,6 +255,31 @@ async function deliver(inv: Invocation, results: Result[]): Promise<boolean> {
 
 const TRANSCRIPT_HINT =
   'slimdoc: this looks like a meeting transcript — --transcript would strip timestamps and merge speaker turns';
+
+function cleanEach(inv: Invocation, docs: SectionedDoc[]): { results: Result[]; failed: boolean } {
+  const wantsHint = !inv.quiet && (inv.stats || process.stderr.isTTY === true);
+  const results: Result[] = [];
+  let hinted = false;
+  let failed = false;
+
+  for (const doc of docs) {
+    if (!inv.quiet) {
+      for (const warning of doc.warnings) writeErr(dim(`slimdoc: ${label(doc.source)}: ${warning}`));
+    }
+    if (wantsHint && !hinted && !inv.cleanOpts.transcript && looksLikeTranscript(doc.text)) {
+      writeErr(dim(TRANSCRIPT_HINT));
+      hinted = true;
+    }
+    try {
+      const cleaned = cleanDocument(doc, inv.cleanOpts, inv.extractOpts);
+      results.push({ doc, ...cleaned, source: doc.source, sourceBytes: onDiskSize(doc.source) });
+    } catch (e) {
+      writeErr(`slimdoc: ${doc.source}: ${messageOf(e)}`);
+      failed = true;
+    }
+  }
+  return { results, failed };
+}
 
 export async function run(argv: string[]): Promise<number> {
   let inv: Invocation;
@@ -472,7 +301,7 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  let docs: ExtractedDoc[];
+  let docs: SectionedDoc[];
   let failed: boolean;
   try {
     ({ docs, failed } = await collect(inv));
@@ -485,26 +314,9 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const wantsHint = !inv.quiet && (inv.stats || process.stderr.isTTY === true);
-  const results: Result[] = [];
-  let hinted = false;
-
-  for (const doc of docs) {
-    if (!inv.quiet) {
-      for (const warning of doc.warnings) writeErr(dim(`slimdoc: ${label(doc.source)}: ${warning}`));
-    }
-    if (wantsHint && !hinted && !inv.cleanOpts.transcript && looksLikeTranscript(doc.text)) {
-      writeErr(dim(TRANSCRIPT_HINT));
-      hinted = true;
-    }
-    try {
-      const { text, stats } = cleanWithStats(doc.text, inv.cleanOpts);
-      results.push({ doc, text, stats, sourceBytes: onDiskSize(doc.source) });
-    } catch (e) {
-      writeErr(`slimdoc: ${doc.source}: ${messageOf(e)}`);
-      failed = true;
-    }
-  }
+  const cleaned = cleanEach(inv, docs);
+  const results = cleaned.results;
+  if (cleaned.failed) failed = true;
 
   if (results.length > 0) {
     try {

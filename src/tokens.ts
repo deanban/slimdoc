@@ -15,6 +15,33 @@ import type { Stats } from './types.js';
 const LETTERS_PER_TOKEN = 5;
 const DIGITS_PER_TOKEN = 3;
 const PUNCT_PER_TOKEN = 4;
+/**
+ * What a run of whitespace costs, measured against cl100k_base rather than
+ * assumed — the assumption was that cost scaled with the number of spaces, and it
+ * does not. Runs of 2, 16, 80 and 128 spaces are *one token each*; the vocabulary
+ * has long space-run tokens and merges greedily. What costs a second token is a
+ * line break followed by indentation, because the newline and the indent are
+ * separate merges.
+ *
+ *   "a b"                1 space, no break     -> 0  (folded into the next word)
+ *   "a      b"           run, no break         -> 1
+ *   "a" + 2..96sp + "b"  any length in range   -> 1
+ *   "\n" "\n\n\n"        breaks, no indent     -> 1
+ *   "\n    " "\n"+40sp   break plus indent     -> 2
+ *   "a" + 256sp + "b"    past the long-run token -> 3
+ *
+ * Every line above is reproduced exactly by this function; `npm run calibrate` is
+ * the check. A single space stays free because every vocabulary folds it into the
+ * word that follows, and charging for it puts prose ~20% hot.
+ */
+const INDENT_TOKEN = 1;
+/**
+ * Where a whitespace run stops fitting in one token. cl100k holds runs up to the
+ * mid-90s in a single token and then starts splitting: 96 spaces cost 1, 112 and
+ * 128 cost 2, 256 cost 3. Runs this long are pathological rather than typical, so
+ * this only keeps the estimate from collapsing on them.
+ */
+const LONG_RUN = 96;
 
 function isAsciiLetter(c: number): boolean {
   return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
@@ -100,15 +127,25 @@ export function estimateTokens(text: string): number {
     }
 
     if (isSpace(c)) {
-      // A space is absorbed into the token of the word that follows it; only a run
-      // containing a line break costs anything.
+      // A single plain space is absorbed into the token of the word that follows
+      // it. Anything more is a token, and pricing runs at zero is what hid the
+      // cost of slimdoc's own PDF output: the character grid indents every
+      // wrapped line and pads between columns, and each of those runs is a token
+      // the estimator was giving away. On the three real papers it was
+      // understating the output by 4-10%, which was the whole reason PDF looked
+      // like it saved 3% while a real tokenizer says it *added* tokens.
       let j = i;
-      let newline = false;
+      let lastBreak = -1;
       while (j < n && isSpace(text.charCodeAt(j))) {
-        if (text.charCodeAt(j) === 0x0a) newline = true;
+        const d = text.charCodeAt(j);
+        if (d === 0x0a || d === 0x0d) lastBreak = j;
         j++;
       }
-      if (newline) tokens += 1;
+      const run = j - i;
+      if (run > 1 || text.charCodeAt(i) !== 0x20) tokens += Math.ceil(run / LONG_RUN);
+      // Indentation after the last line break is a second merge, and it is the
+      // one that makes a hanging indent cost anything at all.
+      if (lastBreak !== -1 && j > lastBreak + 1) tokens += INDENT_TOKEN;
       i = j;
       continue;
     }

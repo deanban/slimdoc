@@ -18,22 +18,13 @@ import {
 } from './clean-markdown.js';
 import { computeStats } from './tokens.js';
 import { tidyTranscript } from './transcript.js';
+import { stripInvisible } from './utils/text.js';
 
 const cp = (code: number): string => String.fromCodePoint(code);
 const charClass = (codes: readonly number[]): string => codes.map(cp).join('');
 
 /** Vertical tab and form feed are line breaks in practice; so are U+2028/U+2029. */
 const LINE_BREAK = new RegExp(`\r\n|\r|[\x0b\x0c${charClass([0x2028, 0x2029])}]`, 'g');
-
-const INVISIBLE = new RegExp(
-  `[${charClass([
-    0x00ad, 0x061c, 0x180e, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
-    0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0xfeff,
-  ])}]`,
-  'g',
-);
-/** C0 and C1 controls, keeping only \n and \t. */
-const CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 
 const EMOJI = new RegExp(
   `[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\p{Emoji_Modifier}${charClass([
@@ -81,7 +72,7 @@ export function clean(text: string, options?: Partial<CleanOptions>): string {
 
   let s = stripSentinels(text).replace(LINE_BREAK, '\n');
   if (opts.preserveCode) s = protect(s, store);
-  if (opts.stripInvisible) s = s.replace(INVISIBLE, '').replace(CONTROLS, '');
+  if (opts.stripInvisible) s = stripInvisible(s);
   if (opts.normalizeUnicode) s = s.normalize('NFKC');
   if (opts.asciiPunctuation) s = foldPunctuation(s);
   if (opts.stripEmoji) s = removeEmoji(s);
@@ -91,9 +82,9 @@ export function clean(text: string, options?: Partial<CleanOptions>): string {
   if (opts.compactTables) s = compactTables(s);
   if (opts.collapseSpaces) s = collapseSpaces(s, opts.stripMarkdown);
   if (opts.trimLines) s = trimLines(s);
-  if (opts.unwrap) s = unwrap(s);
-
   const maxBlank = blankLineLimit(opts.maxBlankLines);
+  if (opts.unwrap) s = unwrap(s, maxBlank);
+
   s = limitBlankLines(s, maxBlank);
   if (opts.transcript) {
     // Runs before stripMarkdown: a Teams export marks the speaker with `__Name__`, and
@@ -161,14 +152,35 @@ function trimLines(text: string): string {
  * its own line and removed every blank, so without the guard a second run would glue
  * those paragraphs together. A document with no blank lines has no paragraph structure
  * left to recover, so skipping is also the honest answer.
+ *
+ * At `maxBlankLines: 0` the one blank a previous run does leave behind is the table
+ * boundary `limitBlankLines` protects, so those blanks are not evidence of paragraph
+ * structure either — counting them would let the second run join the paragraphs the
+ * first run put on adjacent lines.
+ *
+ * The guard is a restriction rather than a switch, though, because "no blank line
+ * anywhere" was costing whole documents. A PDF whose paragraph gaps go undetected
+ * arrives as one unbroken run of wrapped lines, and refusing to join any of them
+ * leaves every line of it wrapped. What can still be joined without any paragraph
+ * structure to go on is a break that cannot be a paragraph boundary in the first
+ * place: a line stopping mid-sentence, continued by one starting mid-sentence.
  */
-function unwrap(text: string): string {
+function unwrap(text: string, maxBlank: number): string {
   const lines = text.split('\n');
-  if (!hasInteriorBlankLine(lines)) return text;
+  const structured = hasInteriorBlankLine(lines, maxBlank === 0);
+  // At `maxBlankLines: 0` not even the restricted join is safe: a previous run
+  // has already removed the blank lines *and* may have stripped the markdown
+  // that stopped a join the first time, so the second run would make one the
+  // first refused. Above zero, the structure that decides a join is still there.
+  const restricted = maxBlank > 0;
   const out: string[] = [];
   for (const line of lines) {
     const prev = out[out.length - 1];
-    if (prev !== undefined && canJoin(prev, line)) {
+    if (
+      prev !== undefined &&
+      canJoin(prev, line) &&
+      (structured || (restricted && continuesSentence(prev, line)))
+    ) {
       out[out.length - 1] = `${prev} ${line.trim()}`;
       continue;
     }
@@ -177,20 +189,40 @@ function unwrap(text: string): string {
   return out.join('\n');
 }
 
+/**
+ * A line break that no paragraph boundary could explain: the line before ends
+ * mid-sentence and the line after starts mid-sentence.
+ *
+ * This is also what keeps the restricted path idempotent. Joining stops exactly
+ * where the predicate fails, so a second run over the joined text finds no
+ * adjacent pair that satisfies it and changes nothing.
+ */
+function continuesSentence(prev: string, next: string): boolean {
+  return /[\p{Ll}\p{N},;:-]$/u.test(prev.trimEnd()) && /^[\p{Ll}]/u.test(next.trim());
+}
+
 /** Blank lines that actually separate two paragraphs — not the document's own padding. */
-function hasInteriorBlankLine(lines: string[]): boolean {
-  let first = -1;
-  let last = -1;
+function hasInteriorBlankLine(lines: string[], ignoreTableBoundaries: boolean): boolean {
+  let previous: string | undefined;
   for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] ?? '').trim() === '') continue;
-    if (first === -1) first = i;
-    last = i;
-  }
-  if (first === -1) return false;
-  for (let i = first + 1; i < last; i++) {
-    if ((lines[i] ?? '').trim() === '') return true;
+    const line = lines[i] ?? '';
+    if (line.trim() !== '') {
+      previous = line;
+      continue;
+    }
+    if (previous === undefined) continue; // leading padding, not a separator
+    let next = i + 1;
+    while (next < lines.length && (lines[next] ?? '').trim() === '') next++;
+    if (next === lines.length) break; // trailing padding, not a separator
+    if (!(ignoreTableBoundaries && isTableBoundary(previous, lines[next] ?? ''))) return true;
+    i = next - 1;
   }
   return false;
+}
+
+/** A table row meeting a non-table row: in GFM the blank line between them is structure. */
+function isTableBoundary(previous: string, next: string): boolean {
+  return isTableRow(previous) !== isTableRow(next);
 }
 
 function canJoin(prev: string, next: string): boolean {
@@ -202,19 +234,32 @@ function canJoin(prev: string, next: string): boolean {
   return !RULE_LINE.test(next) && !isBlockStart(next);
 }
 
-/** Collapse blank runs. Lines are still joined by a newline, so paragraphs stay apart. */
+/**
+ * Collapse blank runs. Lines are still joined by a newline, so paragraphs stay apart.
+ *
+ * One blank always survives where a table meets prose, even at `max: 0`. A GFM table body
+ * runs until a blank line or a block-level structure, and a bare paragraph line is
+ * neither: without that blank the line above is read as the header row and the line below
+ * as one more body row, silently swallowing both into the table. Squeezing a blank run
+ * that is already there is the only thing this relaxes — a boundary with no blank line to
+ * begin with is left exactly as it was found.
+ */
 function limitBlankLines(text: string, max: number): string {
   const out: string[] = [];
   let blanks = 0;
+  let previous: string | undefined;
   for (const line of text.split('\n')) {
     if (line.trim() === '') {
       blanks++;
-      if (blanks <= max) out.push('');
       continue;
     }
+    const floor = previous !== undefined && isTableBoundary(previous, line) ? 1 : 0;
+    for (let i = Math.min(blanks, Math.max(max, floor)); i > 0; i--) out.push('');
     blanks = 0;
+    previous = line;
     out.push(line);
   }
+  for (let i = Math.min(blanks, max); i > 0; i--) out.push('');
   return out.join('\n');
 }
 

@@ -1,11 +1,19 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const CLI_URL = new URL('../dist/cli.js', import.meta.url).href;
+
+/** A real PDF, so the extension-rewrite case runs the extractor it will meet in the field. */
+const GENERATED_PDF = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'fixtures', 'generated', 'two-column-table.pdf',
+);
 
 /**
  * Importing dist/cli.js and calling `run()` inside a child process. A child is used
@@ -271,6 +279,95 @@ test('--out-dir writes one file per input, creating the directory', async () => 
   assert.ok((await readFile(join(target, 'd2.md'), 'utf8')).includes('beta'));
 });
 
+/**
+ * The README promises "with --out-dir the extension is corrected to match the
+ * contents". It was corrected for the formats that existed when the sentence was
+ * written, from a list each new format had to remember to join — and PDF did not,
+ * so a cleaned PDF was written back out under a .pdf name no reader can open.
+ */
+test('--out-dir names a cleaned binary source for what it now contains', async () => {
+  const source = join(dir, 'report.pdf');
+  await copyFile(GENERATED_PDF, source);
+  const target = join(dir, 'outdir-pdf');
+
+  const { code } = await cli(['--out-dir', target, source]);
+  assert.equal(code, 0);
+
+  const written = await readFile(join(target, 'report.md'), 'utf8');
+  assert.match(written, /Crew allocation by deck/);
+  assert.ok(!existsSync(join(target, 'report.pdf')), 'wrote Markdown under a .pdf name');
+});
+
+/**
+ * The other half of the same rule: a format slimdoc did not convert keeps its
+ * name. Renaming `data.csv` to `data.md` would be the same mistake pointing the
+ * other way — `--write` already rewrites these in place, so the two output paths
+ * have to agree on what "still that kind of file" means.
+ */
+test('--out-dir leaves a format it did not convert under its own name', async () => {
+  const source = await fixture('rows.csv', 'deck,crew\n36,12\n10,0\n');
+  const target = join(dir, 'outdir-csv');
+
+  const { code } = await cli(['--out-dir', target, source]);
+  assert.equal(code, 0);
+  assert.match(await readFile(join(target, 'rows.csv'), 'utf8'), /deck,crew/);
+  assert.ok(!existsSync(join(target, 'rows.md')));
+});
+
+/**
+ * Two inputs can share a basename and differ only in their directory, which is
+ * ordinary for `reports/*​/summary.pdf`. Writing both to one name silently
+ * destroys the first result — the failure is invisible, since the run succeeds
+ * and the surviving file looks right.
+ */
+test('--out-dir keeps both results when two inputs share a basename', async () => {
+  await mkdir(join(dir, 'q1'), { recursive: true });
+  await mkdir(join(dir, 'q2'), { recursive: true });
+  const first = join(dir, 'q1', 'summary.md');
+  const second = join(dir, 'q2', 'summary.md');
+  await writeFile(first, 'alpha content\n', 'utf8');
+  await writeFile(second, 'beta content\n', 'utf8');
+  const target = join(dir, 'outdir-collision');
+
+  const { code } = await cli(['--out-dir', target, first, second]);
+  assert.equal(code, 0);
+
+  const written = await Promise.all(
+    (await readdir(target)).sort().map((name) => readFile(join(target, name), 'utf8')),
+  );
+  assert.equal(written.length, 2, `expected two files, got ${written.length}`);
+  assert.ok(written.some((t) => t.includes('alpha')), 'the first input was overwritten');
+  assert.ok(written.some((t) => t.includes('beta')), 'the second input was lost');
+});
+
+/**
+ * The same loss one layer down. `Report.pdf` and `report.pdf` produce output names
+ * that differ as strings, so an exact-match collision check passed them both — and
+ * then macOS and Windows, whose filesystems are case-insensitive by default, did
+ * the overwriting the check exists to prevent. Two files in, two files out, on
+ * every platform.
+ */
+test('--out-dir treats names differing only in case as a collision', async () => {
+  await mkdir(join(dir, 'lower'), { recursive: true });
+  await mkdir(join(dir, 'upper'), { recursive: true });
+  const lower = join(dir, 'lower', 'report.md');
+  const upper = join(dir, 'upper', 'Report.md');
+  await writeFile(lower, 'lowercase content\n', 'utf8');
+  await writeFile(upper, 'uppercase content\n', 'utf8');
+  const target = join(dir, 'outdir-case');
+
+  const { code } = await cli(['--out-dir', target, lower, upper]);
+  assert.equal(code, 0);
+
+  const names = (await readdir(target)).sort();
+  assert.equal(names.length, 2, `expected two files, got ${names.join(', ')}`);
+  assert.equal(
+    new Set(names.map((n) => n.toLowerCase())).size,
+    2,
+    `two names that collide when case-folded: ${names.join(', ')}`,
+  );
+});
+
 test('--write rewrites a text input in place', async () => {
   const path = await fixture('inplace.md', MESSY);
   const { code, stdout } = await cli(['--write', path]);
@@ -345,4 +442,56 @@ test('--out refuses a .docx target because the output is Markdown text', async (
   assert.match(stderr, /would not open/);
   assert.match(stderr, /cleaned\.md/);
   await assert.rejects(readFile(target), { code: 'ENOENT' });
+});
+
+// --------------------------------------------------------------------------
+// documents with pages or slides
+// --------------------------------------------------------------------------
+
+const DECK = new URL('./fixtures/corpus/kitchen-sink.pptx', import.meta.url).pathname;
+
+test('--pages selects a range of slides', async () => {
+  const { code, stdout } = await cli([DECK, '--pages', '2-3', '--quiet']);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /Agenda/);
+  assert.match(stdout, /Summary/);
+  assert.doesNotMatch(stdout, /Runbook/);
+});
+
+test('--pages refuses a range it cannot read', async () => {
+  const { code, stderr } = await cli([DECK, '--pages', '3-1']);
+
+  assert.equal(code, 2);
+  assert.match(stderr, /page or page range/);
+});
+
+test('--section-headings labels each slide', async () => {
+  const { code, stdout } = await cli([DECK, '--section-headings', '--safe', '--quiet']);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /^## Slide 2 — Agenda$/m);
+});
+
+test('--hidden brings back the slides the deck hides', async () => {
+  const plain = await cli([DECK, '--quiet']);
+  const shown = await cli([DECK, '--hidden', '--quiet']);
+
+  assert.doesNotMatch(plain.stdout, /HIDDEN SLIDE MARKER/);
+  assert.match(shown.stdout, /HIDDEN SLIDE MARKER/);
+});
+
+test('--stats reports a line per slide', async () => {
+  const { code, stderr } = await cli([DECK, '--stats', '-o', join(dir, 'deck.md')]);
+
+  assert.equal(code, 0);
+  assert.match(stderr, /1\. {2}Refit Status/);
+  assert.match(stderr, /9\. {2}Runbook.*tokens/);
+});
+
+test('a deck is refused for in-place rewriting', async () => {
+  const { code, stderr } = await cli([DECK, '--write']);
+
+  assert.equal(code, 1);
+  assert.match(stderr, /refusing to rewrite a pptx file in place/);
 });

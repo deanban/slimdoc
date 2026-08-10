@@ -1,12 +1,14 @@
 {
   "name": "slimdoc",
-  "version": "0.1.2",
-  "description": "Shrink any document — Word, Markdown, HTML, RTF or pasted text — into clean, token-cheap input for an LLM.",
+  "version": "0.3.0",
+  "description": "Shrink any document — Word, PowerPoint, PDF, Markdown, HTML, RTF or pasted text — into clean, token-cheap input for an LLM.",
   "keywords": [
     "llm",
     "tokens",
     "whitespace",
     "docx",
+    "pptx",
+    "pdf",
     "markdown",
     "cleanup",
     "transcript",
@@ -27,7 +29,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22"
   },
   "bin": {
     "slimdoc": "dist/cli.js",
@@ -50,10 +52,15 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "clean": "rm -rf dist",
     "test": "npm run build && node --test test/*.test.js",
-    "prepublishOnly": "npm run clean && npm run build && node --test test/*.test.js"
+    "calibrate": "npm run build && node scripts/calibrate-tokens.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "node --test test/*.test.js"
   },
   "dependencies": {
-    "mammoth": "^1.12.0"
+    "mammoth": "^1.12.0",
+    "saxes": "^6.0.0",
+    "unpdf": "^1.8.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

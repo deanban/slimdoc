@@ -50,10 +50,47 @@ test('estimateTokens charges about one token per CJK character', () => {
   assert.equal(estimateTokens(cjk), cjk.length);
 });
 
-test('estimateTokens ignores plain spaces but charges for line breaks', () => {
-  assert.equal(estimateTokens('a b'), estimateTokens('a     b'));
+/**
+ * A single space is free — every vocabulary folds it into the word that follows,
+ * and charging for it puts prose ~20% hot. A *run* is not free, and pricing runs
+ * at zero is what let slimdoc's PDF output carry 17k-22k characters of alignment
+ * whitespace per paper while the estimator reported a 3% saving.
+ */
+test('estimateTokens folds a single space into the next word', () => {
+  assert.equal(estimateTokens('alpha beta gamma'), estimateTokens('alpha  beta  gamma') - 2);
+  assert.equal(estimateTokens('The quick brown fox jumps over the lazy dog.'), 10);
+});
+
+/**
+ * Every number here was measured against cl100k_base, not reasoned about — the
+ * first attempt at this assumed cost scaled with the number of spaces, and the
+ * vocabulary holds a run of 96 in a single token. `npm run calibrate` re-checks
+ * these against the real tokenizer.
+ */
+test('estimateTokens charges for a run of whitespace', () => {
+  assert.ok(estimateTokens('a     b') > estimateTokens('a b'));
   assert.ok(estimateTokens('a\nb') > estimateTokens('a b'));
+  // Flat, not proportional: 2 spaces and 96 cost the same one token.
+  assert.equal(estimateTokens(`a${' '.repeat(2)}b`), estimateTokens('a b') + 1);
+  assert.equal(estimateTokens(`a${' '.repeat(96)}b`), estimateTokens('a b') + 1);
+  // A break plus indentation is two merges, which is what makes a hanging indent
+  // cost anything at all.
+  assert.equal(estimateTokens('a\n    b'), estimateTokens('a\nb') + 1);
+  // Short runs of blank lines still round to one, as they did before.
   assert.equal(estimateTokens('a\n\n\nb'), estimateTokens('a\nb'));
+});
+
+/**
+ * The case the change exists for: the same words, once flat and once on a
+ * character grid with a hanging indent and column padding.
+ */
+test('estimateTokens sees the cost of alignment whitespace', () => {
+  const flat = 'Total revenue 41,200\nOperating margin 18,900\n';
+  const grid = 'Total revenue' + ' '.repeat(24) + '41,200\nOperating margin' + ' '.repeat(20) + '18,900\n';
+
+  // Two padded columns, so two runs that used to be free. cl100k agrees exactly:
+  // 14 tokens flat, 16 on the grid.
+  assert.equal(estimateTokens(grid), estimateTokens(flat) + 2);
 });
 
 test('estimateTokens is monotonic and deterministic', () => {
