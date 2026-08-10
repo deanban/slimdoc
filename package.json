@@ -52,7 +52,10 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
     "clean": "rm -rf dist",
     "test": "npm run build && node --test test/*.test.js",
-    "prepublishOnly": "npm run clean && npm run build && node --test test/*.test.js"
+    "calibrate": "npm run build && node scripts/calibrate-tokens.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "node --test test/*.test.js"
   },
   "dependencies": {
     "mammoth": "^1.12.0",
