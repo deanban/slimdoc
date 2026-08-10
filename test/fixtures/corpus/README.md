@@ -33,9 +33,8 @@ way down the page — cannot appear until running-header suppression has the fou
 pages it needs before it will call anything repeated.
 
 Measure with `node test/bench.js` (after `npm run build`). It reports extracted
-size, tokens per preset, timing and peak RSS, and is deliberately **not** part
-of `npm test` — it measures rather than asserts. The `pptx` and `pdf` rows read
-`pending` until those formats land.
+size, tokens per preset, timing and the resident set between documents, and is
+deliberately **not** part of `npm test` — it measures rather than asserts.
 
 ## Rules the generators follow
 
@@ -44,6 +43,16 @@ of `npm test` — it measures rather than asserts. The `pptx` and `pdf` rows rea
   and a `.pptx` are zips of XML; a PNG is length-prefixed chunks around a zlib
   stream; a PDF is objects, a byte-offset xref table and a trailer. All of it is
   hand-written, following `test/fixtures/make-docx.py`, which is the precedent.
+
+  This rule is right for what these fixtures are for and it has a blind spot, which
+  two adversarial reviews walked straight into. A fixture we write encodes the
+  assumptions we hold: where the extractor guessed, these files guessed the same way
+  and the test passed for the wrong reason. `make-corpus-pptx.py` writes `<a:buChar>`
+  into every paragraph it wants bulleted, so the corpus proved slimdoc reads explicit
+  bullets while every real deck lost all of its; `make-corpus-pdf.py` places its lines
+  at coordinates we chose, with a generous inter-paragraph gap, so the paragraph
+  detector was tuned to our gap and found no paragraphs at all on a real page. See
+  "The three tiers" below for what covers that now.
 - **Byte-identical reruns.** Fixed zip timestamps (`2024-01-01T00:00:00`),
   `external_attr = 0o644 << 16`, fixed part ordering, `sorted()` media, a fixed
   PDF `/CreationDate` and `/ID`. Any randomness comes from a hand-rolled seeded
@@ -196,3 +205,27 @@ RSS is about 97 MB, most of it pdf.js.
 The `pptx` row is measured at defaults, so it excludes the chart series; with
 `--chart-data` the deck extracts about 2.7 kB. The `pdf` row includes the two
 preserved grid regions, which is most of the gap between it and the deck.
+
+## The three tiers
+
+This directory is one of three, and each does a job the others cannot.
+
+**Tier A — real documents, never committed.** `test/fixtures/local/`, gitignored.
+`test/fixtures/local-manifest.json` records each file's logical name, filename, sha256
+and *what it proves*, so the coverage stays documented on a clone that has none of them.
+`test/helpers/local.js` resolves a name and returns `null` with a skip notice when the
+file is absent, so the suite is green either way. These are what caught defects the
+347-test suite passed straight through, and what refined several of the fixes: the naive
+form of the bullet resolution would have added 95 bullets to a real deck.
+
+**Tier B — third-party generated, committed.** `test/fixtures/generated/`, built by
+`reportlab` and `python-pptx`. A generator that decides its own leading, justification,
+cell metrics and placeholder inheritance cannot agree with our code by construction.
+That is the entire job of that directory; see its README.
+
+**Tier C — hand-rolled, here.** Byte-exactness, performance measurement, and the
+constructs no library will emit at all: ZIP64, an EOCD signature inside an archive
+comment, a hostile `c:pt/@idx`, `show="false"` and `hMerge="true"` in place of the
+digits Microsoft writes, a missing `<a:ext>`, `/Rotate 90` on every page of a five-page
+document. Some of those are built as bytes inside the tests themselves, via
+`test/helpers/deck.js`, because a single kitchen-sink deck can only be one deck.

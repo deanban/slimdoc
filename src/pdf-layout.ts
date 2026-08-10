@@ -39,6 +39,8 @@ const BASELINE_TOLERANCE = 0.5;
 const PARAGRAPH_GAP = 1.2;
 /** A line ending this far short of the block's right edge is a paragraph's last. */
 const SHORT_LINE = 0.12;
+/** …and the next line starts at least this many points further right: an indent. */
+const INDENT = 6;
 /** Runs closer than this fraction of a character are the same word. */
 const TIGHT_RUN = 0.3;
 /** Narrower than this, a vertical band is word spacing rather than a gutter. */
@@ -327,12 +329,16 @@ const SENTENCE_END = /[.!?…][)\]"'’”]?$/;
  * Opened-up leading is the ordinary case, now at a threshold real typesetting
  * reaches.
  *
- * And a line that finishes a sentence well short of where the block's lines end
- * is a paragraph's last line, whatever the leading did. That is what catches the
- * documents which separate paragraphs by indenting the next one instead of by
- * spacing: the indent itself is a weaker signal — a block quote and a nested
- * list produce it too — while a short line plus a full stop is nearly always the
- * end of something, and the cost of being wrong is only a join not made.
+ * And the pair of signals that catches documents separating paragraphs by
+ * indenting the next one rather than by spacing them: a line that finishes a
+ * sentence short of where the block's lines end, followed by one that starts
+ * further right than it did.
+ *
+ * Both halves are needed, and each was tried alone. A short line ending in a
+ * full stop is not enough — a line ends short whenever the next word is long,
+ * and on a real paper that split a paragraph after its first sentence. An
+ * indent is not enough either: a block quote and a nested list are indents.
+ * Together they are the shape of a paragraph break and little else.
  */
 function breaksParagraph(previous: Line, line: Line, block: Block): boolean {
   const gap = previous.y - line.y;
@@ -340,6 +346,7 @@ function breaksParagraph(previous: Line, line: Line, block: Block): boolean {
   if (block.usual > 0 && gap > block.usual * PARAGRAPH_GAP) return true;
   return (
     block.width > 0 &&
+    line.left > previous.left + INDENT &&
     previous.right < block.right - block.width * SHORT_LINE &&
     SENTENCE_END.test(previous.text.trimEnd())
   );

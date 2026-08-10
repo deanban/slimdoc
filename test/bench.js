@@ -83,9 +83,12 @@ const targets = files.length > 0 ? files : DEFAULT_FILES;
 console.log('slimdoc corpus benchmark');
 console.log('saved% is cleaning only; extraction has already dropped image payloads.');
 
-let peak = 0;
+// Sampled between documents, not during one: this is the resident set the process
+// settles at, not the high-water mark of any single extraction. Naming it "peak"
+// claimed a measurement that was not being taken.
+let resident = 0;
 for (const path of targets) {
   reportOne(await measure(path));
-  peak = Math.max(peak, process.memoryUsage().rss);
+  resident = Math.max(resident, process.memoryUsage().rss);
 }
-console.log(`\npeak RSS ${formatBytes(peak)}`);
+console.log(`\nRSS between documents, highest ${formatBytes(resident)}`);

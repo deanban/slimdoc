@@ -1,13 +1,30 @@
 # slimdoc — PDF and presentation support (design + plan)
 
-> Companion to `SPEC.md`. Same rules apply: shared signatures are a contract.
-> Revision 2, after adversarial review. This document adds two source formats
-> (`pdf`, `pptx`), fixes one pre-existing bug (docx tables), and changes two lines of
-> `SPEC.md` — the dependency rule and the Node floor.
+> Revision 3, after two adversarial reviews and a pass against real documents.
+> This document adds two source formats (`pdf`, `pptx`) and fixes one pre-existing
+> bug (docx tables). It stands alone: the project rules it depends on are stated
+> here rather than referenced, since the document they came from is not tracked.
+
+## The rules this document works under
+
+Carried over, and binding on everything below:
+
+- **Runtime: Node >= 22.** Raised here from `>= 18.17`; the reasoning is under
+  "The Node floor".
+- **Dependencies: `mammoth` (docx), `unpdf` (pdf) and `saxes` (OOXML), each imported
+  lazily, so a run that touches none of those formats loads none of them.** The ZIP
+  container reader is stdlib. Widened here from "only `mammoth`"; see "The dependency
+  rule".
+- **Shared signatures are a contract.** `extractFromBuffer` and `extractFromFile`
+  extend, never change, and stay callable exactly as before.
+- **"Meaning fully preserved"** is the promise cleaning makes. It is not achievable for
+  image-heavy PDFs and presentations, and the narrower contract that replaces it for
+  these two formats is under "The default output contract" — which is the tie breaker
+  for every question this document does not anticipate.
 
 ## What shipped, and where it differs from this document
 
-All seven phases are implemented. Three decisions were taken differently, each
+All seven phases are implemented. Four decisions were taken differently, each
 deliberately:
 
 **Phase 4 is the fenced fallback only.** No coordinate clustering, no confidence gate,
@@ -27,14 +44,95 @@ so the "internal for now" decision holds. `cleanDocument` *is* exported, because
 library caller reaching for `clean()` on a paged document would otherwise silently lose
 the section boundary the CLI gets for free.
 
-Two smaller notes. `src/cli.ts` was split into `cli.ts`, `cli-options.ts` and
+**A group's rotation and flips are not composed.** This document asks for the full
+transform — child offset, extent scaling, rotation, flips. Only the first two are
+applied. Rotation and flips move a shape *within* its own bounds, which cannot change a
+top-to-bottom reading order, and composing them properly needs the group centre for no
+gain that has been demonstrated. Recorded as a deviation rather than fixed: a group
+rotated far enough to reorder its children against their unrotated positions would be
+read in the wrong order, and no document met so far does that.
+
+One smaller note: `src/cli.ts` was split into `cli.ts`, `cli-options.ts` and
 `cli-report.ts` before the new flags landed, since it was already over this project's
-400-line file limit. And the acceptance corpus is the generated `kitchen-sink.*`
-fixtures plus ad-hoc runs against real PDFs on the author's machine; the real-world
-corpus this document asks for — an exported deck, an academic paper, an OCR'd document,
-a third-party-generated PPTX — has not been assembled, so the quality claims rest on
-narrower evidence than intended. Running against real files was not wasted: it is what
-found the subscript-ordering and split-word bugs that the fixtures did not.
+400-line file limit.
+
+### The real-document corpus, and what it cost
+
+The acceptance corpus was originally the generated `kitchen-sink.*` fixtures plus ad-hoc
+runs; the real-world corpus this document asks for had not been assembled. Two
+adversarial reviews then found around twenty defects that a 347-test suite passed
+straight through, and the reason was structural rather than careless. Every fixture was
+hand-written under a stdlib-only rule, so wherever the extractor guessed, the fixture
+guessed the same way and the test passed for the wrong reason.
+
+The corpus is now three tiers, described in `test/fixtures/corpus/README.md` and
+`test/fixtures/generated/README.md`: hand-rolled fixtures for byte-exactness and for
+constructs no library will emit, third-party-generated ones for structure we cannot
+fake, and real documents that are never committed, recorded in
+`test/fixtures/local-manifest.json` so the coverage stays visible on a clone that has
+none of them.
+
+Every defect below was reproduced against a document the code had never seen, and
+several were *refined* by one: the naive form of the bullet fix would have added 95
+bullets to a real deck, and the first form of the paragraph rule split a real paper's
+paragraphs after their first sentence.
+
+## 0.3.0: what changed in the output
+
+Six of the fixes change default output for every document, which is why this ships as a
+minor version rather than a patch. Measured on the whole corpus, `--balanced`, before
+and after:
+
+| Document | Tokens | Bullets | Fenced blocks | Lines |
+|---|---|---|---|---|
+| `deck-textboxes.pptx` (3 slides, all text boxes) | 802 | 0 | 0 | 188 |
+| `deck-mixed.pptx` (12 slides, 4 charts) | 2,743 → 2,874 | 14 → 22 | 0 | 330 → 346 |
+| `deck-hidden.pptx` (9 slides) | 1,342 | 0 | 0 | 239 |
+| `paper-single.pdf` (8 pages) | 6,348 → 6,362 | 14 | 5 | 221 → 269 |
+| `paper-ocr-columns.pdf` (8 pages) | 9,627 → 9,279 | 0 | 36 | 838 → 523 |
+| `paper-figures.pdf` (8 pages) | 8,861 → 8,704 | 0 | 35 → 7 | 501 → 404 |
+| `form-rotated.pdf` (2 pages) | 659 → 650 | 0 | 2 → 0 | 95 → 94 |
+| `kitchen-sink.pdf` | 969 → 965 | 0 | 2 | 86 → 85 |
+| `kitchen-sink.pptx` | 699 → 750 | 11 → 13 | 0 | 80 → 85 |
+| `kitchen-sink.docx` / `.html` | unchanged | unchanged | unchanged | unchanged |
+
+Reading the table:
+
+**Decks gain tokens, and should.** A chart's title, axis titles, category names and
+series names are visible text and are now emitted by default; only the numbers stay
+behind `--chart-data`. That is +131 tokens on `deck-mixed` — four charts whose subject
+(`Accuracy Score (%)`, `Average Latency (seconds)`) appeared nowhere else on those
+slides.
+
+**PDFs lose them.** `paper-ocr-columns` drops 3.6% and 315 lines because grid
+preservation stopped fencing justified prose, which let `unwrap` run on pages it had
+been shut out of. `paper-figures` drops 1.8% for the same reason.
+
+**Slide numbers moved.** Hidden slides now hold their positions, so a nine-slide deck
+with slide 6 hidden emits sections 1-5 and 7-9. `--pages 6` and `## Slide 6` mean what
+PowerPoint means by slide 6, and mean it whether or not `--hidden` is set.
+
+The honest total: 1-4% on real documents, in both directions, against the far larger
+figures the hand-written fixtures suggested. Most of what these fixes bought is
+correctness — a table's values staying with their rows, a rotated page keeping its body
+text, a deck's bullets existing at all — and correctness does not show up in a token
+count.
+
+### Known limits, recorded rather than implied
+
+- **`maxItemsPerPage` bounds output, not work.** `getTextContent()` has materialised
+  every run on the page before the cap applies. Bounding the work needs an entry point
+  unpdf does not expose.
+- **A paragraph break before an indented line reads as a code block.** The paragraph
+  detector now emits a blank line before an indented first line, and blank-then-indent
+  is exactly Markdown's indented code block, which `preserveCode` then exempts from
+  unwrapping. Costs +0.2% on the one real paper where it fires, and preserves the
+  indentation instead of joining the line. Left alone rather than special-cased.
+- **`sanitizeText` does two of the cleaner's steps, not all of them** — NFKC and the
+  invisible-character strip. Fenced regions are exempt from cleaning, so they keep their
+  smart quotes, em dashes and emoji. The two that run are the ones that would otherwise
+  corrupt the layout inference itself.
+- **Group rotation and flips are not composed**, as above.
 
 ## The shape of the problem
 
@@ -50,7 +148,7 @@ reconstructed and can be wrong. That asymmetry drives most of the decisions belo
 
 ## The default output contract
 
-`SPEC.md` promises "meaning fully preserved". That is not achievable for image-heavy
+Cleaning promises "meaning fully preserved". That is not achievable for image-heavy
 PDFs and presentations, and pretending otherwise produces bad defaults. The narrower,
 honest contract:
 
@@ -184,12 +282,12 @@ ends:
 Independently of PDFs: **Node 18 reached EOL on 2025-04-30 and Node 20 on 2026-04-30.**
 slimdoc's current `engines` field advertises support for two end-of-life runtimes.
 
-So `SPEC.md`'s `Runtime: Node >= 18.17` becomes **`Node >= 22`**. This is a breaking
+So the `Runtime: Node >= 18.17` rule becomes **`Node >= 22`**. This is a breaking
 change to the package and warrants a minor version bump and a README note.
 
 ### The dependency rule
 
-`SPEC.md` states:
+The rule was:
 
 > Dependencies: **only** `mammoth` (docx). Everything else uses the Node stdlib.
 
@@ -324,8 +422,8 @@ corpus. It follows the contract — page labels are opt-in, and `## Slide 3 — 
 duplicates a title already present in the slide's own text — but slide boundaries do
 carry meaning for an LLM. Sections are always separated by a blank line regardless.
 
-**Signature compatibility.** `SPEC.md` forbids changing shared signatures, so the entry
-points extend rather than change, and both remain callable exactly as today:
+**Signature compatibility.** Shared signatures are a contract, so the entry points
+extend rather than change, and both remain callable exactly as today:
 
 ```ts
 extractFromBuffer(buf: Buffer, hint?: { filename?: string; extract?: Partial<ExtractOptions> })
@@ -620,7 +718,7 @@ pipeline**, not extraction alone. That is the specific failure v1 shipped.
 | 3 | **PDF core** | Lazy `unpdf`, sequential selected pages, conservative lines, position-aware header suppression, mixed-scan handling | **high** |
 | 4 | **PDF tables** | Confidence gate, fenced fallback, `--pages` | **high** |
 | 5 | **PPTX extras** | Chart data (opt-in), SmartArt, per-section stats | medium |
-| 6 | **Docs** | README, `SPEC.md` amendments, help text | low |
+| 6 | **Docs** | README, spec amendments, help text | low |
 
 **Phase 0 comes first and is worth shipping on its own.** slimdoc today mangles tables in
 all three formats it already supports, and mangles code in one of them — a `.docx` table

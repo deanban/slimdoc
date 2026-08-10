@@ -60,8 +60,11 @@ The output is Markdown text, so writing it into a `.docx` filename would leave y
 a file Word cannot open and the original content gone. The same refusal covers `.rtf`
 and `.html`.
 
-With `--out-dir` the extension is corrected to match the contents, so
-`report.docx` is written as `clean/report.md` rather than a `.docx` that isn't one.
+With `--out-dir` the extension is corrected to match the contents, so `report.docx` and
+`report.pdf` are both written as `clean/report.md` rather than as a `.docx` or a `.pdf`
+that isn't one. Two inputs that would land on the same name keep a directory segment to
+tell them apart — `a/report.pdf` and `b/report.pdf` become `clean/a-report.md` and
+`clean/b-report.md` — so nothing is silently overwritten.
 
 `slimdoc` emits Markdown text, never a Word file, so `--out` rejects a `.docx`,
 `.doc`, `.rtf` or `.pdf` target rather than writing a file your reader cannot open:
@@ -102,7 +105,7 @@ foot of one page gets unwrapped into the first line of the next, and a table's c
 are erased by the same space-collapsing that tidies prose.
 
 ```bash
-slimdoc deck.pptx --pages 2-5,9      # slides, as the reader numbers them
+slimdoc deck.pptx --pages 2-5,9      # slides, numbered as PowerPoint numbers them
 slimdoc report.pdf --section-headings # emit `## Page 3` markers
 slimdoc deck.pptx --stats            # a token count per slide
 ```
