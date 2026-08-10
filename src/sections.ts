@@ -10,7 +10,7 @@
 
 import { clean } from './clean.js';
 import { computeStats, estimateTokens } from './tokens.js';
-import { resolveExtractOptions } from './types.js';
+import { mergeExtract, resolveExtractOptions } from './types.js';
 import type {
   CleanOptions,
   ExtractOptions,
@@ -89,7 +89,12 @@ export function cleanDocument(
     return { text: cleaned, stats: computeStats(doc.text, cleaned), sections: [] };
   }
 
-  const { sectionHeadings } = resolveExtractOptions(extractOptions ?? doc.options);
+  // Layered, not chosen between. `extractOptions ?? doc.options` read as "the
+  // caller's options if they passed any", so a library caller asking for one
+  // thing — `cleanDocument(doc, {}, { hiddenContent: true })` — silently threw
+  // away every option the extraction had recorded, and `sectionHeadings` fell
+  // back to its default in the middle of a run that had asked for it.
+  const { sectionHeadings } = resolveExtractOptions(mergeExtract(doc.options, extractOptions));
   const parts: string[] = [];
   const stats: SectionStats[] = [];
 

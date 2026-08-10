@@ -12,7 +12,7 @@ import test from 'node:test';
 
 import { cleanDocument } from '../dist/sections.js';
 import { cleanWithStats } from '../dist/clean.js';
-import { EXTRACT_DEFAULTS } from '../dist/types.js';
+import { EXTRACT_DEFAULTS, mergeExtract, resolveExtractOptions } from '../dist/types.js';
 
 const doc = (sections, format = 'pptx') => ({
   text: sections.map((s) => s.text).join('\n\n'),
@@ -201,4 +201,39 @@ test('sections: the options an extraction ran under reach the cleaner', () => {
 test('sections: the per-section characters add up to the document', () => {
   const { text, sections } = cleanDocument(DECK);
   assert.equal(sections.reduce((total, s) => total + s.chars, 0), text.length);
+});
+
+/**
+ * `cleanDocument`'s third argument used to *replace* the options the extraction
+ * recorded rather than layer over them: `extractOptions ?? doc.options`. So a
+ * caller overriding one unrelated field silently reverted every other field to
+ * its default, and `sectionHeadings` — the one option cleaning is responsible
+ * for — disappeared mid-run with nothing said.
+ */
+test('sections: an override layers over the recorded options rather than replacing them', () => {
+  const doc = {
+    text: 'Body',
+    format: 'pptx',
+    source: 'deck.pptx',
+    warnings: [],
+    sections: [{ index: 1, label: 'Intro', text: 'Body' }],
+    options: resolveExtractOptions({ sectionHeadings: true }),
+  };
+
+  const both = cleanDocument(doc, { preset: 'safe' }, { hiddenContent: true });
+  assert.match(both.text, /^## Slide 1 — Intro$/m, 'the recorded sectionHeadings was discarded');
+
+  // And the override still wins where the two disagree.
+  const off = cleanDocument(doc, { preset: 'safe' }, { sectionHeadings: false });
+  assert.doesNotMatch(off.text, /^## Slide 1/m);
+});
+
+test('sections: limits merge field by field across the two option sets', () => {
+  const merged = mergeExtract(
+    { sectionHeadings: true, limits: { maxPages: 7, maxInputBytes: 99 } },
+    { limits: { maxPages: 3 } },
+  );
+
+  assert.equal(merged.sectionHeadings, true);
+  assert.deepEqual(merged.limits, { maxPages: 3, maxInputBytes: 99 });
 });

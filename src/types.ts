@@ -147,7 +147,7 @@ export interface ExtractOptions {
   pages: PageRange[];
   /** `## Page 3` / `## Slide 3 — Title` markers. */
   sectionHeadings: boolean;
-  /** PDF: suppress text repeated across most pages. */
+  /** Suppress text repeated across most pages (PDF) or slides (PPTX), keeping the first. */
   dropRunningHeaders: boolean;
   /** PDF: rejoin `inter-\nnational`. */
   dehyphenate: boolean;
@@ -183,6 +183,31 @@ export function resolveExtractOptions(options: ExtractOverrides = {}): ExtractOp
     ...options,
     limits: { ...DEFAULT_LIMITS, ...options.limits },
   };
+}
+
+/**
+ * Layer `over` on top of `base`, field by field, `limits` included.
+ *
+ * Needed wherever two sets of options meet — the ones an extraction recorded and
+ * the ones a later call passes — because the obvious `over ?? base` is not a
+ * merge: it makes any single override discard everything the other side held.
+ * `undefined` in `over` means "not specified", so it must not overwrite.
+ */
+export function mergeExtract(
+  base: ExtractOverrides | undefined,
+  over: ExtractOverrides | undefined,
+): ExtractOverrides {
+  if (!base) return over ?? {};
+  if (!over) return base;
+
+  const merged: ExtractOverrides = { ...base };
+  for (const [key, value] of Object.entries(over)) {
+    if (value !== undefined && key !== 'limits') {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  if (base.limits || over.limits) merged.limits = { ...base.limits, ...over.limits };
+  return merged;
 }
 
 export interface Stats {
