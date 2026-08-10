@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Runtime and build dependencies. Grouped so a quiet week produces one PR,
+  # not five — each PR costs a full CI run and a merge.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+      production-patch:
+        dependency-type: production
+        update-types: [patch]
+    commit-message:
+      prefix: 'deps'
+      prefix-development: 'deps(dev)'
+
+  # Pinned action versions go stale silently and are a supply-chain surface.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: 'ci'

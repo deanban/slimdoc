@@ -1,0 +1,41 @@
+name: Feature request
+description: A new format, flag, or behaviour
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        slimdoc has one job: shrink a document into clean, token-cheap text.
+        Proposals land best when they're framed against that.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that slimdoc makes hard or impossible today?
+      placeholder: |
+        I paste Confluence exports into an LLM and the macro boilerplate eats
+        a third of my token budget.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like it to do
+      description: If it's a new flag, suggest the name and what it toggles.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Existing flags or presets you tried, and why they fell short.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a PR for this

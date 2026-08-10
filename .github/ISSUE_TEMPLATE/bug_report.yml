@@ -1,0 +1,73 @@
+name: Bug report
+description: Something slimdoc does wrong — bad output, a crash, a flag that misbehaves
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The single most useful thing you can include is a
+        **small input file that reproduces it** — a two-paragraph `.docx` beats a
+        200-page one, and it can go straight into `test/fixtures/`.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The output you got, and the output you expected instead.
+      placeholder: |
+        Running `slimdoc report.pdf` collapses the table on page 4 into one line.
+        I expected the aligned columns to survive as a code block.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The exact command, and the input if you can share it.
+      render: shell
+      placeholder: slimdoc report.pdf --stats
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: slimdoc version
+      description: '`slimdoc --version`, or the git SHA if running from source.'
+      placeholder: 0.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version and OS
+      description: '`node --version`'
+      placeholder: v22.11.0, macOS 15
+    validations:
+      required: true
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Input format
+      multiple: true
+      options:
+        - .docx
+        - .pptx
+        - .pdf
+        - .md
+        - .html
+        - .rtf
+        - plain text / stdin
+        - clipboard
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Stack traces, `--stats` output, or a link to a sample file.

@@ -1,0 +1,125 @@
+name: Release
+
+# Publishing is driven entirely by the version field in package.json.
+#
+# Merge a PR to main that bumps the version -> this workflow publishes that
+# version to npm, tags the commit, and opens a GitHub Release.
+# Merge a PR that does not touch the version -> this workflow no-ops.
+#
+# There is no manual `npm publish` step and no long-lived npm token: the job
+# authenticates to npm via GitHub OIDC (trusted publishing), which also attaches
+# a provenance attestation to the published tarball.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check for a new version
+    runs-on: ubuntu-latest
+    outputs:
+      should-publish: ${{ steps.compare.outputs.should-publish }}
+      version: ${{ steps.compare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compare package.json against the npm registry
+        id: compare
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Local:  $name@$version"
+
+          # `npm view` exits non-zero both for an unpublished version and for an
+          # entirely unpublished package. Either way, that version is ours to take.
+          if npm view "$name@$version" version > /dev/null 2>&1; then
+            echo "Registry already has $name@$version — nothing to publish."
+            echo "should-publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Registry does not have $name@$version — publishing."
+            echo "should-publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject a version that already has a git tag
+        if: steps.compare.outputs.should-publish == 'true'
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.compare.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1; then
+            echo "::error::Tag $tag already exists but the version is not on npm."
+            echo "::error::This usually means a previous release published the tag and then failed."
+            echo "::error::Resolve by hand: delete the tag, or bump to the next version."
+            exit 1
+          fi
+
+  publish:
+    name: Publish to npm
+    needs: check
+    if: needs.check.outputs.should-publish == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/slimdoc
+    permissions:
+      contents: write # push the tag and create the GitHub Release
+      id-token: write # mint the OIDC token npm trusted publishing verifies
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: node --test test/*.test.js
+
+      # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a
+      # short-lived credential. `prepublishOnly` re-runs clean + build + test.
+      - name: Publish
+        run: npm publish
+
+      - name: Tag the release commit
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --verify-tag
