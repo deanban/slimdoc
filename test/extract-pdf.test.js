@@ -137,6 +137,59 @@ test('pdf: a real two-column document is still read column by column', async (t)
   assert.match(text, /^\s*place {2}the very costfy {2}thujone\./m);
 });
 
+/**
+ * Where a paragraph ends, on a page whose leading a typesetter chose.
+ *
+ * A PDF has no paragraphs: the only evidence is that the leading opens up
+ * between two lines. The threshold was 1.5× the usual line spacing — above what
+ * real typesetting produces. reportlab's own body style here leaves 20pt against
+ * 14pt leading, or 1.43×, and PowerPoint, Word and LaTeX all sit in the same
+ * 1.2–1.45 band. So no blank line was emitted, and `unwrap` — which deliberately
+ * skips text containing no blank line at all, since text with no paragraph
+ * structure has none to recover — then switched itself off for the whole page.
+ *
+ * Undoing a PDF's hard wrapping is most of what cleaning a PDF is for, so the
+ * two rules between them turned the feature off on exactly the documents it
+ * exists for, and did it silently.
+ */
+test('pdf: prose set with ordinary leading still has paragraphs in it', async () => {
+  const doc = await extractFromFile(PROSE_PDF);
+  const { text } = cleanDocument(doc, { preset: 'balanced' }, {});
+
+  const paragraphs = text.split('\n').filter((line) => line.trim() !== '');
+  assert.equal(paragraphs.length, 3, `12 wrapped lines should be 3 paragraphs:\n${text}`);
+  assert.match(paragraphs[0], /^The reconstruction of reading order .* as typography\.$/);
+  assert.match(paragraphs[1], /^A second paragraph exists .* is silent\.$/);
+});
+
+/** The same page, but the extraction: the boundaries must be found before cleaning. */
+test('pdf: the paragraph boundary is found at extraction', async () => {
+  const doc = await extractFromFile(PROSE_PDF);
+  assert.equal(doc.text.split(/\n\s*\n/).length, 3, doc.text);
+});
+
+/**
+ * And the guard against over-joining, on a paper whose paragraphs were already
+ * being found: lowering the threshold must not merge two of them.
+ */
+test('pdf: a real paper keeps the paragraphs it already had', async (t) => {
+  const file = localFixture('paper-single', t);
+  if (file === null) return;
+
+  const doc = await extractFromFile(file, { pages: [[3, 5]] });
+  const { text } = cleanDocument(doc, { preset: 'balanced' }, {});
+  const lines = text.split('\n').filter((line) => line.trim() !== '');
+
+  // Unwrap fires here either way; what matters is that it still stops in the
+  // right places, so the joined lines stay whole sentences rather than becoming
+  // one line per page.
+  assert.ok(lines.length > 20, `${lines.length} lines — paragraphs were merged:\n${text.slice(0, 600)}`);
+  assert.ok(
+    lines.filter((line) => line.length > 1200).length === 0,
+    'a line ran past 1200 characters, so two paragraphs were joined',
+  );
+});
+
 test('pdf: a single-column page keeps its order', async () => {
   const { text } = await read();
 

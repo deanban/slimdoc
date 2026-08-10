@@ -58,16 +58,35 @@ test('sections: unwrap joins within a section and never across one', () => {
 });
 
 /**
- * `unwrap` skips a run of text holding no blank line at all, which is what
- * keeps `clean()` idempotent at `maxBlankLines: 0`. Per-section cleaning
- * inherits that: a slide carrying one wrapped paragraph and nothing else keeps
- * its line breaks. Pinned here because it is a consequence of the section loop
- * rather than an accident, and because the PDF extractor depends on emitting
- * paragraph structure if it wants its pages unwrapped.
+ * `unwrap` used to skip a run of text holding no blank line at all, which kept
+ * `clean()` idempotent at `maxBlankLines: 0` and cost whole documents
+ * everywhere else: a slide or a PDF page with one wrapped paragraph and no
+ * blank line stayed wrapped, line for line.
+ *
+ * What it does now is restrict rather than skip. With no paragraph structure to
+ * go on it joins only a break that could not be a paragraph boundary — a line
+ * stopping mid-sentence continued by one starting mid-sentence — which is
+ * exactly the break a hard wrap makes. Two sentences on two lines are left
+ * alone, because there the break might mean something.
  */
-test('sections: a lone wrapped paragraph keeps its breaks', () => {
-  const single = doc([{ index: 1, text: 'Hull plating is\nahead of schedule.' }]);
-  assert.equal(cleanDocument(single, { preset: 'balanced' }).text, 'Hull plating is\nahead of schedule.\n');
+test('sections: a lone wrapped paragraph is unwrapped, one that might not be is not', () => {
+  const wrapped = doc([{ index: 1, text: 'Hull plating is\nahead of schedule.' }]);
+  assert.equal(cleanDocument(wrapped, { preset: 'balanced' }).text, 'Hull plating is ahead of schedule.\n');
+
+  const sentences = doc([{ index: 1, text: 'Hull plating is ahead.\nDelivery slips to stardate 7412.' }]);
+  assert.equal(
+    cleanDocument(sentences, { preset: 'balanced' }).text,
+    'Hull plating is ahead.\nDelivery slips to stardate 7412.\n',
+  );
+});
+
+/** At `maxBlankLines: 0` even that is unsafe, since a previous run has erased the evidence. */
+test('sections: the restricted join is off where a second run could not repeat it', () => {
+  const wrapped = doc([{ index: 1, text: 'Hull plating is\nahead of schedule.' }]);
+  assert.equal(
+    cleanDocument(wrapped, { preset: 'aggressive' }).text,
+    'Hull plating is\nahead of schedule.\n',
+  );
 });
 
 test('sections: a blank line separates sections even at maxBlankLines 0', () => {

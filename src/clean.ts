@@ -157,20 +157,48 @@ function trimLines(text: string): string {
  * boundary `limitBlankLines` protects, so those blanks are not evidence of paragraph
  * structure either — counting them would let the second run join the paragraphs the
  * first run put on adjacent lines.
+ *
+ * The guard is a restriction rather than a switch, though, because "no blank line
+ * anywhere" was costing whole documents. A PDF whose paragraph gaps go undetected
+ * arrives as one unbroken run of wrapped lines, and refusing to join any of them
+ * leaves every line of it wrapped. What can still be joined without any paragraph
+ * structure to go on is a break that cannot be a paragraph boundary in the first
+ * place: a line stopping mid-sentence, continued by one starting mid-sentence.
  */
 function unwrap(text: string, maxBlank: number): string {
   const lines = text.split('\n');
-  if (!hasInteriorBlankLine(lines, maxBlank === 0)) return text;
+  const structured = hasInteriorBlankLine(lines, maxBlank === 0);
+  // At `maxBlankLines: 0` not even the restricted join is safe: a previous run
+  // has already removed the blank lines *and* may have stripped the markdown
+  // that stopped a join the first time, so the second run would make one the
+  // first refused. Above zero, the structure that decides a join is still there.
+  const restricted = maxBlank > 0;
   const out: string[] = [];
   for (const line of lines) {
     const prev = out[out.length - 1];
-    if (prev !== undefined && canJoin(prev, line)) {
+    if (
+      prev !== undefined &&
+      canJoin(prev, line) &&
+      (structured || (restricted && continuesSentence(prev, line)))
+    ) {
       out[out.length - 1] = `${prev} ${line.trim()}`;
       continue;
     }
     out.push(line);
   }
   return out.join('\n');
+}
+
+/**
+ * A line break that no paragraph boundary could explain: the line before ends
+ * mid-sentence and the line after starts mid-sentence.
+ *
+ * This is also what keeps the restricted path idempotent. Joining stops exactly
+ * where the predicate fails, so a second run over the joined text finds no
+ * adjacent pair that satisfies it and changes nothing.
+ */
+function continuesSentence(prev: string, next: string): boolean {
+  return /[\p{Ll}\p{N},;:-]$/u.test(prev.trimEnd()) && /^[\p{Ll}]/u.test(next.trim());
 }
 
 /** Blank lines that actually separate two paragraphs — not the document's own padding. */

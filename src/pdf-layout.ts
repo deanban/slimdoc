@@ -27,8 +27,18 @@ export interface Line {
 
 /** A baseline may wobble by this share of the glyph height and stay one line. */
 const BASELINE_TOLERANCE = 0.5;
-/** A vertical gap this much larger than the usual line spacing is a paragraph. */
-const PARAGRAPH_GAP = 1.5;
+/**
+ * A vertical gap this much larger than the usual line spacing is a paragraph.
+ *
+ * 1.5 was above what typesetting actually produces. reportlab's default body
+ * style leaves 1.43× and Word, PowerPoint and LaTeX all sit in the same 1.2–1.45
+ * band, so the threshold fired on generated fixtures and on nothing else. Within
+ * a paragraph the leading is constant, so there is nothing between 1.0 and 1.2
+ * to protect against.
+ */
+const PARAGRAPH_GAP = 1.2;
+/** A line ending this far short of the block's right edge is a paragraph's last. */
+const SHORT_LINE = 0.12;
 /** Runs closer than this fraction of a character are the same word. */
 const TIGHT_RUN = 0.3;
 /** Narrower than this, a vertical band is word spacing rather than a gutter. */
@@ -281,25 +291,58 @@ export function toParagraphs(lines: Line[]): string {
     const gap = (lines[i - 1] as Line).y - (lines[i] as Line).y;
     if (gap > 0) gaps.push(gap);
   }
-  const usual = median(gaps);
+  const block = {
+    usual: median(gaps),
+    right: median(lines.map((line) => line.right)),
+    width: median(lines.map((line) => line.right)) - median(lines.map((line) => line.left)),
+  };
 
   const out: string[] = [];
   lines.forEach((line, i) => {
     const previous = lines[i - 1];
-    if (previous && breaksParagraph(previous, line, usual)) out.push('');
+    if (previous && breaksParagraph(previous, line, block)) out.push('');
     out.push(line.text);
   });
   return out.join('\n');
 }
 
+interface Block {
+  /** The page's usual line spacing. */
+  usual: number;
+  /** Where its lines end, and how wide they run. */
+  right: number;
+  width: number;
+}
+
+/** `.`, `?`, `!`, `…` — optionally behind a closing quote or bracket. */
+const SENTENCE_END = /[.!?…][)\]"'’”]?$/;
+
 /**
+ * Where one paragraph ends and the next begins, from three signals.
+ *
  * A jump back up the page means the reading order moved to the next column, and
  * the last line of one column has nothing to do with the first line of the
  * next — without the break `unwrap` would join them into a single sentence.
+ *
+ * Opened-up leading is the ordinary case, now at a threshold real typesetting
+ * reaches.
+ *
+ * And a line that finishes a sentence well short of where the block's lines end
+ * is a paragraph's last line, whatever the leading did. That is what catches the
+ * documents which separate paragraphs by indenting the next one instead of by
+ * spacing: the indent itself is a weaker signal — a block quote and a nested
+ * list produce it too — while a short line plus a full stop is nearly always the
+ * end of something, and the cost of being wrong is only a join not made.
  */
-function breaksParagraph(previous: Line, line: Line, usual: number): boolean {
+function breaksParagraph(previous: Line, line: Line, block: Block): boolean {
   const gap = previous.y - line.y;
-  return gap < 0 || (usual > 0 && gap > usual * PARAGRAPH_GAP);
+  if (gap < 0) return true;
+  if (block.usual > 0 && gap > block.usual * PARAGRAPH_GAP) return true;
+  return (
+    block.width > 0 &&
+    previous.right < block.right - block.width * SHORT_LINE &&
+    SENTENCE_END.test(previous.text.trimEnd())
+  );
 }
 
 // --------------------------------------------------------------------------
