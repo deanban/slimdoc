@@ -45,6 +45,9 @@ export const CHART_NOTES = {
   points: `a chart carried more than the ${MAX_POINTS} points read from each series`,
   series: `a chart carried more than the ${MAX_SERIES} series read from it`,
   index: 'a chart point gave a position that is not one, and was dropped',
+  mixed:
+    'a chart mixed plot types, and the series that are not category-based ' +
+    '(scatter, bubble) were not read',
 } as const;
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
@@ -86,9 +89,22 @@ function cachedPoints(holder: XmlNode | undefined): Points {
   return points;
 }
 
-/** `position` is 1-based: an unnamed first series is `Series 1`, as a reader counts. */
+/**
+ * What the series is called, or `Series N` when it is called nothing.
+ *
+ * `c:tx` holds the name one of two ways: a `c:strRef` with a cached `c:pt` when the
+ * name is a cell reference, or a bare `c:v` when the author typed it in. Only the
+ * first was read — through `cachedPoints`, which collects `c:pt` descendants and
+ * finds none in the literal form — so every hand-typed series name in a deck came
+ * out as `Series 1`, `Series 2`, and the legend a reader would use to tell the
+ * lines apart was replaced by counting.
+ *
+ * `position` is 1-based, as a reader counts.
+ */
 function seriesName(series: XmlNode, position: number): string {
-  const name = cachedPoints(child(series, 'c', 'tx')).values[0];
+  const tx = child(series, 'c', 'tx');
+  const literal = tx && descendants(tx, 'c', 'pt').length === 0 ? oneLine(textOf(tx)) : '';
+  const name = literal !== '' ? literal : cachedPoints(tx).values[0];
   return name === undefined || name === '' ? `${SERIES_HEADER} ${position}` : name;
 }
 
@@ -118,21 +134,40 @@ interface Usable {
   skipped?: string;
   /** Series past the cap, which are not read at all. */
   dropped: number;
+  /** Series of a plot type this does not read, in a chart that also has ones it does. */
+  foreign: number;
 }
 
-/** The plots slimdoc understands, by the elements they carry rather than by name. */
+/**
+ * The plots slimdoc understands, by the elements they carry rather than by name.
+ *
+ * A combination chart holds more than one plot type, and only the category-based
+ * ones are read. When *every* series is foreign that is reported as a skipped
+ * chart — but when only some are, they used to be filtered out and nothing said,
+ * so a deck's scatter overlay vanished from a chart that still rendered and still
+ * looked complete. `foreign` is what makes that visible.
+ */
 function categorySeries(chart: XmlNode): Usable {
   const all = descendants(chart, 'c', 'ser');
-  if (all.length === 0) return { series: [], dropped: 0 };
+  if (all.length === 0) return { series: [], dropped: 0, foreign: 0 };
 
   const usable = all.filter((series) => child(series, 'c', 'cat') && child(series, 'c', 'val'));
   if (usable.length === 0) {
-    return { series: [], dropped: 0, skipped: 'it is a scatter, bubble or otherwise non-category chart' };
+    return {
+      series: [],
+      dropped: 0,
+      foreign: 0,
+      skipped: 'it is a scatter, bubble or otherwise non-category chart',
+    };
   }
   if (descendants(chart, 'c', 'multiLvlStrRef').length > 0) {
-    return { series: [], dropped: 0, skipped: 'its categories are multi-level' };
+    return { series: [], dropped: 0, foreign: 0, skipped: 'its categories are multi-level' };
   }
-  return { series: usable.slice(0, MAX_SERIES), dropped: Math.max(0, usable.length - MAX_SERIES) };
+  return {
+    series: usable.slice(0, MAX_SERIES),
+    dropped: Math.max(0, usable.length - MAX_SERIES),
+    foreign: all.length - usable.length,
+  };
 }
 
 function categoryHeader(chart: XmlNode): string {
@@ -164,7 +199,7 @@ function summarise(categories: string[], names: string[], header: string): strin
  */
 export function chartText(chartSpace: XmlNode, opts: { values: boolean }): ChartResult {
   const chart = child(chartSpace, 'c', 'chart') ?? chartSpace;
-  const { series, skipped, dropped } = categorySeries(chart);
+  const { series, skipped, dropped, foreign } = categorySeries(chart);
   if (skipped !== undefined) return { text: '', skipped, notes: [] };
   if (series.length === 0) return { text: '', notes: [] };
 
@@ -175,6 +210,7 @@ export function chartText(chartSpace: XmlNode, opts: { values: boolean }): Chart
   const all = [categories, ...columns];
   const notes: string[] = [];
   if (dropped > 0) notes.push(CHART_NOTES.series);
+  if (foreign > 0) notes.push(CHART_NOTES.mixed);
   if (all.some((points) => points.past > 0)) notes.push(CHART_NOTES.points);
   if (all.some((points) => points.bad > 0)) notes.push(CHART_NOTES.index);
 
@@ -187,9 +223,20 @@ export function chartText(chartSpace: XmlNode, opts: { values: boolean }): Chart
   return { text: heading === '' ? body : `${heading}\n\n${body}`, notes };
 }
 
+/**
+ * The cached values as a table.
+ *
+ * The row count comes from the longest column, not from the categories. Driving it
+ * from `categories.map` meant the cache decided how much of the data was readable:
+ * a series with more values than there are cached categories lost the tail
+ * silently, and a chart whose categories were not cached at all — which happens,
+ * the cache is written by whatever last saved the file — rendered no rows whatever,
+ * despite having every value.
+ */
 function withValues(categories: string[], columns: Points[], header: string[]): string {
-  const rows = categories.map((category, row) => [
-    category,
+  const height = Math.max(categories.length, ...columns.map((column) => column.values.length));
+  const rows = Array.from({ length: height }, (_, row) => [
+    categories[row] ?? '',
     ...columns.map((column) => column.values[row] ?? ''),
   ]);
   return renderTable([header, ...rows]) ?? '';

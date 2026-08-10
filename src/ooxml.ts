@@ -15,12 +15,34 @@ import { SaxesParser, type SaxesAttributeNS, type SaxesTagNS } from 'saxes';
 
 import { UnsupportedFormatError } from './errors.js';
 
+/**
+ * Namespace URI -> the prefix the rest of slimdoc matches on.
+ *
+ * Two URIs per vocabulary, because ECMA-376 has two conformance classes and
+ * only one of them was here. Transitional is what PowerPoint writes by default
+ * and what every fixture used; Strict (ISO/IEC 29500-1, re-rooted on
+ * `purl.oclc.org`) is what "Strict Open XML Presentation" in the Save-as dialog
+ * produces, and what some government and EU-procurement pipelines mandate.
+ *
+ * Getting this wrong is not a parse error, which is why it survived a 391-test
+ * suite: every element resolves to an unrecognised prefix, every lookup misses,
+ * and the deck extracts as nothing at all. `emptyTextWarning` in
+ * `extract-pptx.ts` is the backstop for the next vocabulary this table misses.
+ */
 const CANONICAL: Readonly<Record<string, string>> = {
   'http://schemas.openxmlformats.org/drawingml/2006/main': 'a',
+  'http://purl.oclc.org/ooxml/drawingml/main': 'a',
   'http://schemas.openxmlformats.org/presentationml/2006/main': 'p',
+  'http://purl.oclc.org/ooxml/presentationml/main': 'p',
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships': 'r',
+  'http://purl.oclc.org/ooxml/officeDocument/relationships': 'r',
   'http://schemas.openxmlformats.org/drawingml/2006/chart': 'c',
+  'http://purl.oclc.org/ooxml/drawingml/chart': 'c',
   'http://schemas.openxmlformats.org/drawingml/2006/diagram': 'dgm',
+  'http://purl.oclc.org/ooxml/drawingml/diagram': 'dgm',
+  // Markup compatibility and OPC package relationships are Part 2/Part 3
+  // vocabularies: ISO Strict re-roots the markup languages above but leaves
+  // these two alone, so they have one URI each rather than two.
   'http://schemas.openxmlformats.org/markup-compatibility/2006': 'mc',
   'http://schemas.openxmlformats.org/package/2006/relationships': 'pr',
 };

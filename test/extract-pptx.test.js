@@ -20,7 +20,7 @@ import { diagramList } from '../dist/pptx-diagrams.js';
 import { parseXml } from '../dist/ooxml.js';
 import { extractPptx } from '../dist/extract-pptx.js';
 import { localFixture } from './helpers/local.js';
-import { deckOf, slideXml, textBox } from './helpers/deck.js';
+import { deckOf, slideXml, textBox, STRICT } from './helpers/deck.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DECK = join(HERE, 'fixtures', 'corpus', 'kitchen-sink.pptx');
@@ -734,4 +734,185 @@ test('pptx: extraction is pure — the same file twice gives the same text', asy
 
   assert.equal(a.text, b.text);
   assert.deepEqual(a.doc.warnings, b.doc.warnings);
+});
+
+// --------------------------------------------------------------------------
+// conformance classes
+// --------------------------------------------------------------------------
+
+/**
+ * ECMA-376 has two conformance classes and only Transitional was implemented.
+ * Strict re-roots every markup namespace on `purl.oclc.org` while keeping the
+ * prefixes and element names identical, so a Strict deck parsed cleanly, matched
+ * nothing, and extracted as an empty string with no warning — the silent-loss
+ * failure mode, and invisible to a suite whose every fixture is Transitional.
+ *
+ * The assertion is equality between the classes rather than a fixed string: the
+ * two are the same document and there is nothing for slimdoc to say about which
+ * one it was handed.
+ */
+test('pptx: a Strict deck reads the same as the Transitional one', () => {
+  const content = [['Strict conformance', 'reads like any other deck'], ['Second slide']];
+  const deck = (ns) => deckOf(content.map((lines) => slideXml(textBox(lines), '', ns)), ns);
+
+  const transitional = extractPptx(deck(undefined), 'deck.pptx');
+  const iso = extractPptx(deck(STRICT), 'deck.pptx');
+
+  assert.match(iso.text, /Strict conformance/);
+  assert.equal(iso.text, transitional.text);
+  assert.equal(iso.sections.length, 2);
+  assert.deepEqual(iso.warnings, []);
+});
+
+/**
+ * The backstop for the next vocabulary the namespace table misses. A deck whose
+ * slides carry text in a namespace slimdoc does not know reads as nothing, and
+ * "nothing" has to be reported rather than returned as a successful result.
+ */
+test('pptx: a deck that reads as no text at all says so', () => {
+  const unknown = { p: 'urn:example:presentationml', a: 'urn:example:drawingml', r: 'urn:example:rels' };
+  const doc = extractPptx(deckOf([slideXml(textBox(['Invisible']), '', unknown)]), 'deck.pptx');
+
+  assert.equal(doc.text.trim(), '');
+  assert.ok(
+    doc.warnings.some((w) => /found no text at all/.test(w)),
+    `no empty-deck warning: ${doc.warnings.join('; ')}`,
+  );
+});
+
+/** Selecting no slides is not the same failure, and must stay quiet. */
+test('pptx: selecting nothing does not warn about empty text', () => {
+  const doc = extractPptx(deckOf([slideXml(textBox(['Only slide']))]), 'deck.pptx', { pages: [[5, 9]] });
+
+  assert.ok(!doc.warnings.some((w) => /found no text at all/.test(w)), doc.warnings.join('; '));
+});
+
+// --------------------------------------------------------------------------
+// what a chart says about itself
+// --------------------------------------------------------------------------
+
+const C_NS = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+const chartSpace = (body) =>
+  parseXml(`<c:chartSpace xmlns:c="${C_NS}"><c:chart><c:plotArea>${body}</c:plotArea></c:chart></c:chartSpace>`);
+
+const CAT = (...names) =>
+  '<c:cat><c:strRef><c:strCache>' +
+  names.map((n, i) => `<c:pt idx="${i}"><c:v>${n}</c:v></c:pt>`).join('') +
+  '</c:strCache></c:strRef></c:cat>';
+const VAL = (...values) =>
+  '<c:val><c:numRef><c:numCache>' +
+  values.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('') +
+  '</c:numCache></c:numRef></c:val>';
+
+/**
+ * `c:tx` names a series one of two ways: a `c:strRef` with a cached `c:pt` when the
+ * name is a cell reference, or a bare `c:v` when the author typed it. Only the first
+ * was read — through a helper that collects `c:pt` descendants and finds none in the
+ * literal form — so every hand-typed series name came out as `Series N`, and the
+ * legend a reader needs to tell two lines apart was replaced by counting.
+ */
+test('pptx: a series named in the file keeps its name', () => {
+  const chart = chartSpace(
+    '<c:barChart><c:ser><c:tx><c:v>Measured latency</c:v></c:tx>' +
+      CAT('Q1', 'Q2') + VAL(7, 9) + '</c:ser></c:barChart>',
+  );
+
+  const { text } = chartText(chart, { values: true });
+  assert.match(text, /Measured latency/);
+  assert.doesNotMatch(text, /Series 1/);
+});
+
+/**
+ * The row count came from the categories, so the cache decided how much of the data
+ * was readable. A series with more values than cached categories lost the tail, and
+ * a chart whose categories were not cached at all rendered no rows whatever —
+ * despite carrying every value.
+ */
+test('pptx: values past the cached categories are still read', () => {
+  const chart = chartSpace(
+    `<c:barChart><c:ser>${CAT('Q1', 'Q2')}${VAL(7, 9, 11, 13)}</c:ser></c:barChart>`,
+  );
+
+  const { text } = chartText(chart, { values: true });
+  for (const value of ['7', '9', '11', '13']) {
+    assert.match(text, new RegExp(`\\| ${value} \\|`), `${value} was dropped\n${text}`);
+  }
+});
+
+test('pptx: a chart with values but no cached categories still renders them', () => {
+  const chart = chartSpace(`<c:barChart><c:ser><c:cat/>${VAL(41, 42)}</c:ser></c:barChart>`);
+
+  const { text } = chartText(chart, { values: true });
+  assert.match(text, /\| 41 \|/, text);
+  assert.match(text, /\| 42 \|/, text);
+});
+
+/**
+ * A combination chart holds more than one plot type and only the category-based
+ * ones are read. When every series is foreign that is reported as a skipped chart;
+ * when only some are, they were filtered out with nothing said, so a scatter overlay
+ * vanished from a chart that still rendered and still looked complete.
+ */
+test('pptx: series dropped from a mixed chart are reported', () => {
+  const chart = chartSpace(
+    `<c:barChart><c:ser>${CAT('Q1')}${VAL(7)}</c:ser></c:barChart>` +
+      '<c:scatterChart><c:ser><c:xVal><c:numRef><c:numCache>' +
+      '<c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:xVal></c:ser></c:scatterChart>',
+  );
+
+  const { text, notes } = chartText(chart, { values: true });
+  assert.match(text, /Q1/, 'the category series was lost too');
+  assert.ok(notes.some((n) => /not category-based|scatter/.test(n)), notes.join('; '));
+});
+
+/**
+ * `a:fld` is a field. The comment above the paragraph reader claimed fields were
+ * why runs are walked child by child rather than swept up by descendant — and then
+ * the loop handled only `a:r`, so an author-inserted field's text was dropped. Slide
+ * numbers and dates stay out: they are furniture, they repeat on every slide, and
+ * the layout they come from is already excluded.
+ */
+test('pptx: an author-inserted field is text, a slide number is not', () => {
+  const fld = (type, value) =>
+    `<a:p><a:fld id="{1}" type="${type}"><a:t>${value}</a:t></a:fld></a:p>`;
+  const shape =
+    '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
+    '<p:spPr><a:xfrm><a:off x="100000" y="100000"/><a:ext cx="5000000" cy="1000000"/></a:xfrm></p:spPr>' +
+    `<p:txBody><a:bodyPr/>${fld('publishDate', 'Reviewed 12 March')}${fld('slidenum', '7')}</p:txBody></p:sp>`;
+
+  const doc = extractPptx(deckOf([slideXml(shape)]), 'deck.pptx');
+
+  assert.match(doc.text, /Reviewed 12 March/, doc.text);
+  assert.doesNotMatch(doc.text, /^7$/m, doc.text);
+});
+
+/**
+ * `--pages` is reached for because a deck is large, and it used to pay for the
+ * whole deck anyway: numbering the slides needs one attribute off each slide's
+ * root element, and that attribute was read by inflating every byte of every
+ * part. So a single oversized slide nobody asked for aborted a run that never
+ * needed to open it.
+ *
+ * The limit here is small enough that slide 2 cannot be read in full, and the
+ * assertion is that asking for slide 1 succeeds regardless.
+ */
+test('pptx: an oversized unselected slide does not abort the run', () => {
+  const big = slideXml(textBox([`Padding ${'x'.repeat(40000)}`]));
+  const deck = deckOf([slideXml(textBox(['The slide asked for'])), big, slideXml(textBox(['Third']))]);
+
+  const doc = extractPptx(deck, 'deck.pptx', { pages: [[1, 1]], limits: { maxEntryBytes: 20000 } });
+
+  assert.equal(doc.sections.length, 1);
+  assert.match(doc.text, /The slide asked for/);
+});
+
+/** And reading that slide is still refused when it is the one selected. */
+test('pptx: an oversized slide that was selected is still refused', () => {
+  const big = slideXml(textBox([`Padding ${'x'.repeat(40000)}`]));
+  const deck = deckOf([slideXml(textBox(['First'])), big]);
+
+  assert.throws(
+    () => extractPptx(deck, 'deck.pptx', { pages: [[2, 2]], limits: { maxEntryBytes: 20000 } }),
+    /too large/,
+  );
 });

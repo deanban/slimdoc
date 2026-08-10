@@ -16,7 +16,7 @@
  * slide text.
  */
 
-import { inflateRawSync } from 'node:zlib';
+import { constants, inflateRawSync } from 'node:zlib';
 
 import { UnsupportedFormatError } from './errors.js';
 import type { Limits } from './types.js';
@@ -140,6 +140,12 @@ function dataOffset(buf: Buffer, entry: Entry): number {
   return start;
 }
 
+/**
+ * An entry's bytes. Called with a byte count it returns at most that much, having
+ * inflated only enough of the entry to produce it.
+ */
+export type EntryReader = (bytes?: number) => Buffer;
+
 function inflate(raw: Buffer, entry: Entry, cap: number): Buffer {
   if (entry.method === STORED) return Buffer.from(raw);
   if (entry.method !== DEFLATED) {
@@ -158,29 +164,71 @@ function inflate(raw: Buffer, entry: Entry, cap: number): Buffer {
 }
 
 /**
+ * Compressed bytes read when only the head of an entry is wanted.
+ *
+ * Deflate is a stream, so inflating a prefix of the compressed bytes yields a
+ * prefix of the output — which is what bounds this. Worst case is this many bytes
+ * times deflate's maximum ratio, transient and orders below `maxEntryBytes`; the
+ * realistic case for an XML part's opening tag is a few hundred bytes.
+ */
+const HEAD_COMPRESSED = 4096;
+
+/**
+ * The first `bytes` of an entry, without inflating the rest of it.
+ *
+ * `Z_SYNC_FLUSH` is what makes a deliberately truncated stream return what it has
+ * instead of failing on the missing tail. A corrupt or unreadable head yields
+ * nothing rather than refusing the archive: every caller is asking an optional
+ * question about the entry, not reading it for its content.
+ */
+function inflateHead(raw: Buffer, entry: Entry, bytes: number): Buffer {
+  if (entry.method === STORED) return Buffer.from(raw.subarray(0, bytes));
+  if (entry.method !== DEFLATED) return Buffer.alloc(0);
+  try {
+    const head = inflateRawSync(raw.subarray(0, Math.min(raw.length, HEAD_COMPRESSED)), {
+      finishFlush: constants.Z_SYNC_FLUSH,
+    });
+    return head.subarray(0, bytes);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
  * Entry name -> lazy inflater. Nothing is decompressed until it is asked for,
  * and an entry that is read twice is only paid for once.
+ *
+ * A reader called with a byte count returns only that much of the entry, and pays
+ * only for that much. `extract-pptx.ts` needs one attribute off each slide's root
+ * element to number the slides, including the slides `--pages` is about to
+ * discard — and reading that by inflating whole parts meant `--pages 3` on a large
+ * deck inflated every slide in it, and an oversized *unselected* slide aborted a
+ * run that never needed to open it. A head read is bounded by its own budget
+ * rather than by the entry's declared size, so neither is true any more.
  *
  * Duplicate names resolve to the last entry, which is what every mainstream
  * reader does with an archive that carries the same part twice.
  */
-export function readZipEntries(buf: Buffer, limits: Limits): Map<string, () => Buffer> {
+export function readZipEntries(buf: Buffer, limits: Limits): Map<string, EntryReader> {
   if (buf.length < EOCD_SIZE) refuse('is too short to be a zip archive');
 
   const budget = { spent: 0 };
-  const readers = new Map<string, () => Buffer>();
+  const readers = new Map<string, EntryReader>();
 
   for (const entry of readCentralDirectory(buf)) {
     let cached: Buffer | undefined;
-    readers.set(entry.name, () => {
-      if (cached !== undefined) return cached;
+    readers.set(entry.name, (bytes?: number) => {
+      if (cached !== undefined) return bytes === undefined ? cached : cached.subarray(0, bytes);
+
+      const start = dataOffset(buf, entry);
+      const raw = buf.subarray(start, start + entry.compressed);
+      if (bytes !== undefined) return inflateHead(raw, entry, bytes);
 
       const cap = Math.min(limits.maxEntryBytes, limits.maxInflatedBytes - budget.spent);
       if (entry.uncompressed > cap || entry.compressed > cap) {
         refuse(`entry ${entry.name} is too large to read within the configured limits`);
       }
-      const start = dataOffset(buf, entry);
-      cached = inflate(buf.subarray(start, start + entry.compressed), entry, cap);
+      cached = inflate(raw, entry, cap);
       budget.spent += cached.length;
       return cached;
     });

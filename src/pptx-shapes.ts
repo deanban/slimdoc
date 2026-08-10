@@ -81,14 +81,32 @@ function groupTransform(xfrm: XmlNode | undefined, outer: Transform): Transform 
 
 const INDENT = '  ';
 
+/**
+ * Field types PowerPoint fills in by itself, which are chrome rather than writing.
+ *
+ * A slide number and a date are furniture: they say nothing about the deck, they
+ * repeat on every slide, and the layout they come from is already excluded. Every
+ * other field type is something an author inserted deliberately.
+ */
+const CHROME_FIELD = /^(?:slidenum|datetime\d*|ftr|hdr)$/i;
+
+/**
+ * One paragraph's text.
+ *
+ * `a:fld` is read as well as `a:r`, which is what the comment here used to claim
+ * was already happening — it said fields "carry an `a:t` of their own, which is
+ * why runs are read child by child rather than swept up by descendant", and then
+ * the loop handled only `a:r`. So the structure was right for a reason that was
+ * never acted on, and an author-inserted field's text was dropped outright.
+ */
 function runText(paragraph: XmlNode): string {
   let text = '';
   for (const node of paragraph.children) {
     if (node.ns !== 'a') continue;
-    // `a:fld` is an auto-number or date. It carries an `a:t` of its own, which
-    // is why runs are read child by child rather than swept up by descendant.
     if (node.local === 'r') text += child(node, 'a', 't')?.text ?? '';
-    else if (node.local === 'br') text += '\n';
+    else if (node.local === 'fld' && !CHROME_FIELD.test(node.attrs['type'] ?? '')) {
+      text += child(node, 'a', 't')?.text ?? '';
+    } else if (node.local === 'br') text += '\n';
   }
   return text;
 }

@@ -34,7 +34,7 @@ import {
 import type { Section, SectionedDoc } from './sections.js';
 import { resolveExtractOptions, type ExtractOverrides } from './types.js';
 import { selectPages } from './utils/ranges.js';
-import { readZipEntries } from './zip.js';
+import { readZipEntries, type EntryReader } from './zip.js';
 
 const PRESENTATION_PART = 'ppt/presentation.xml';
 const SLIDE_RELATIONSHIP = /\/slide$/;
@@ -51,7 +51,7 @@ const MASTER_STYLES: ReadonlyArray<readonly [StyleKind, string]> = [
 /** A 4:3 deck in EMU, used only when a malformed package omits `<p:sldSz>`. */
 const DEFAULT_SLIDE = { cx: 9144000, cy: 6858000 };
 
-type Entries = Map<string, () => Buffer>;
+type Entries = Map<string, EntryReader>;
 
 function partOf(entries: Entries, name: string): XmlNode | undefined {
   const reader = entries.get(name);
@@ -67,6 +67,9 @@ interface SlideRef {
   hidden: boolean;
 }
 
+/** Enough of a slide part to hold its root element, and no more. */
+const ROOT_HEAD_BYTES = 8192;
+
 /**
  * The slide parts in presentation order, named but not yet parsed.
  *
@@ -74,8 +77,14 @@ interface SlideRef {
  * because a deck is large, and every slide the id list named was parsed in full
  * before the selection could discard it. All that is needed to *number* the
  * slides is which of them are hidden, and that is one attribute on the document
- * element — so an unselected slide costs its opening tag, and with
- * `hiddenContent` set, where the flag changes nothing, it costs nothing at all.
+ * element.
+ *
+ * So the read is bounded to the head of the part rather than the whole of it. It
+ * was not, and the comment here claimed an unselected slide "costs its opening
+ * tag" while the code inflated every byte of it to find that tag — which meant
+ * `--pages 3` paid for the whole deck, and a single oversized slide nobody asked
+ * for could trip `maxEntryBytes` and abort the run. With `hiddenContent` set the
+ * flag changes nothing and the ternary below never reads at all.
  */
 function slideRefs(entries: Entries, presentation: XmlNode, hiddenContent: boolean): SlideRef[] {
   const rels = relsOf(entries, PRESENTATION_PART);
@@ -90,7 +99,10 @@ function slideRefs(entries: Entries, presentation: XmlNode, hiddenContent: boole
     const reader = entries.get(part);
     if (!reader) continue;
 
-    refs.push({ part, hidden: hiddenContent ? false : isTrue(rootAttributes(reader())['show']) === false });
+    refs.push({
+      part,
+      hidden: hiddenContent ? false : isTrue(rootAttributes(reader(ROOT_HEAD_BYTES))['show']) === false,
+    });
   }
   return refs;
 }
@@ -180,6 +192,80 @@ function addTotals(into: ShapeOutput, one: ShapeOutput): void {
   into.chartNotes.push(...one.chartNotes);
 }
 
+/** Below this many slides there is too little evidence to call anything repeated. */
+const MIN_SLIDES = 4;
+/** A block has to appear on this share of the slides read to be deck furniture. */
+const REPEAT_SHARE = 0.6;
+
+/**
+ * Drop a block repeated identically across most slides, keeping the first copy.
+ *
+ * The same contract `suppressRunningText` implements for PDF pages, and for the
+ * same reason: a deck's footer, tagline or standing disclaimer is written once per
+ * slide and read once by a reader. One copy carries it; the rest are duplication
+ * the deck's own template inserted.
+ *
+ * The threshold counts *slides*, not appearances, and drops from every slide after
+ * the first — the two things the PDF version got wrong. Measured on the real
+ * 12-slide deck here, this is what removes the ten identical auto-generated image
+ * captions that survive `meaningfulAlt`.
+ */
+function suppressRepeatedBlocks(sections: Section[]): number {
+  if (sections.length < MIN_SLIDES) return 0;
+
+  const slidesWith = new Map<string, Set<Section>>();
+  for (const section of sections) {
+    for (const block of section.text.split('\n\n')) {
+      const key = block.trim();
+      if (key === '') continue;
+      const slides = slidesWith.get(key);
+      if (slides) slides.add(section);
+      else slidesWith.set(key, new Set([section]));
+    }
+  }
+
+  const furniture = new Set<string>();
+  for (const [key, slides] of slidesWith) {
+    if (slides.size >= sections.length * REPEAT_SHARE) furniture.add(key);
+  }
+  if (furniture.size === 0) return 0;
+
+  const seen = new Set<string>();
+  let suppressed = 0;
+  for (const section of sections) {
+    const kept = section.text.split('\n\n').filter((block) => {
+      const key = block.trim();
+      if (!furniture.has(key) || !seen.has(key)) {
+        seen.add(key);
+        return true;
+      }
+      suppressed += 1;
+      return false;
+    });
+    section.text = kept.join('\n\n');
+  }
+  return suppressed;
+}
+
+/**
+ * A deck that read as no text at all, when there were slides to read it from.
+ *
+ * The failure this exists for is a namespace slimdoc does not know: every lookup
+ * misses, no element matches, and extraction *succeeds* with an empty string. An
+ * ISO-Strict deck did exactly that, and nothing in 391 tests noticed, because a
+ * silent empty result looks the same as a legitimately blank deck. It is not the
+ * same thing, and the difference is worth a sentence to the user.
+ *
+ * Genuinely image-only decks exist, so this is a warning and not an error — but
+ * they are rare enough that saying so is the right trade. `read` counts the
+ * slides actually opened, so skipping every slide via `--pages` stays quiet.
+ */
+function emptyTextWarning(read: number, text: string, images: number): string | undefined {
+  if (read === 0 || text.trim() !== '') return undefined;
+  const because = images > 0 ? ` — the ${images} shape${images === 1 ? '' : 's'} found carried no text` : '';
+  return `read ${read} slide${read === 1 ? '' : 's'} but found no text at all${because}`;
+}
+
 function warningsFor(totals: ShapeOutput, hidden: number, dropped: number): string[] {
   const warnings: string[] = [];
   if (totals.images > 0) {
@@ -261,12 +347,22 @@ export function extractPptx(
     });
   }
 
+  const repeated = opts.dropRunningHeaders ? suppressRepeatedBlocks(sections) : 0;
+  const text = sections.map((s) => s.text).join('\n\n');
+  const empty = emptyTextWarning(sections.length, text, totals.images);
+
   return {
-    text: sections.map((s) => s.text).join('\n\n'),
+    text,
     format: 'pptx',
     options: opts,
     source,
-    warnings: warningsFor(totals, hidden, selection.dropped),
+    warnings: [
+      ...warningsFor(totals, hidden, selection.dropped),
+      ...(repeated > 0
+        ? [`suppressed ${repeated} block${repeated === 1 ? '' : 's'} repeated across slides`]
+        : []),
+      ...(empty ? [empty] : []),
+    ],
     sections,
   };
 }

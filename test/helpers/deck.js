@@ -78,15 +78,33 @@ export const deflated = (name, text) => ({
   method: DEFLATED,
 });
 
-const P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
-const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
-const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+/**
+ * ECMA-376's two conformance classes, as the only thing that distinguishes them
+ * on the wire: the namespace URIs. Prefixes are identical, element names are
+ * identical, and a reader that resolves by prefix cannot tell these apart — which
+ * is why a Strict deck extracted as an empty string rather than as an error.
+ *
+ * OPC package relationships are Part 2 and unchanged between the two, so `PR` is
+ * shared.
+ */
 const PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
 
+export const TRANSITIONAL = {
+  p: 'http://schemas.openxmlformats.org/presentationml/2006/main',
+  a: 'http://schemas.openxmlformats.org/drawingml/2006/main',
+  r: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+};
+
+export const STRICT = {
+  p: 'http://purl.oclc.org/ooxml/presentationml/main',
+  a: 'http://purl.oclc.org/ooxml/drawingml/main',
+  r: 'http://purl.oclc.org/ooxml/officeDocument/relationships',
+};
+
 /** A `<p:sld>` around `body`, with `attrs` on the root — `show="false"` and the like. */
-export function slideXml(body, attrs = '') {
+export function slideXml(body, attrs = '', ns = TRANSITIONAL) {
   return (
-    `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}" ${attrs}>` +
+    `<p:sld xmlns:p="${ns.p}" xmlns:a="${ns.a}" xmlns:r="${ns.r}" ${attrs}>` +
     `<p:cSld><p:spTree>${body}</p:spTree></p:cSld></p:sld>`
   );
 }
@@ -106,19 +124,24 @@ export function textBox(lines, { x = 100000, y = 100000, cx = 5000000, cy = 1000
  * relationships, and the slide XML handed in. No layout and no master, so a
  * paragraph here inherits from nothing and says only what it says.
  */
-export function deckOf(slides) {
+export function deckOf(slides, ns = TRANSITIONAL) {
   const ids = slides.map((_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`).join('');
   const rels = slides
-    .map((_, i) => `<Relationship Id="rId${i + 1}" Type="${R}/slide" Target="slides/slide${i + 1}.xml"/>`)
+    .map((_, i) => `<Relationship Id="rId${i + 1}" Type="${ns.r}/slide" Target="slides/slide${i + 1}.xml"/>`)
     .join('');
 
   return buildZip([
     stored(
       'ppt/presentation.xml',
-      `<p:presentation xmlns:p="${P}" xmlns:r="${R}">` +
+      `<p:presentation xmlns:p="${ns.p}" xmlns:r="${ns.r}">` +
         `<p:sldIdLst>${ids}</p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/></p:presentation>`,
     ),
     stored('ppt/_rels/presentation.xml.rels', `<Relationships xmlns="${PR}">${rels}</Relationships>`),
     ...slides.map((xml, i) => stored(`ppt/slides/slide${i + 1}.xml`, xml)),
   ]);
+}
+
+/** The same deck in both conformance classes, which must read identically. */
+export function strictDeckOf(slides) {
+  return deckOf(slides, STRICT);
 }
