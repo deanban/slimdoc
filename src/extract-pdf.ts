@@ -21,6 +21,7 @@ import { flattenIndents, preserveGridRegions } from './pdf-preformat.js';
 import type { Section, SectionedDoc } from './sections.js';
 import { resolveExtractOptions, type ExtractOptions, type ExtractOverrides } from './types.js';
 import { selectPages } from './utils/ranges.js';
+import { dominantTurn, quarterTurn, uprightPlacement, type QuarterTurn } from './utils/rotation.js';
 
 /** The subset of pdf.js's text item that layout needs. */
 interface RawItem {
@@ -32,7 +33,7 @@ interface RawItem {
 
 interface PdfPage {
   getTextContent(): Promise<{ items: RawItem[] }>;
-  getViewport(options: { scale: number; rotation?: number }): { height: number };
+  getViewport(options: { scale: number; rotation?: number }): { width: number; height: number };
 }
 
 interface PdfDocument {
@@ -40,10 +41,14 @@ interface PdfDocument {
   getPage(n: number): Promise<PdfPage>;
 }
 
+const DEFAULT_PAGE_WIDTH = 612;
 const DEFAULT_PAGE_HEIGHT = 792;
+/** Below this share, rotated runs are stray labels rather than the page's text. */
+const ROTATED_MINORITY = 0.1;
 
-function toItems(raw: RawItem[], limit: number): TextItem[] {
+function toItems(raw: RawItem[], limit: number): { items: TextItem[]; turns: (QuarterTurn | undefined)[] } {
   const items: TextItem[] = [];
+  const turns: (QuarterTurn | undefined)[] = [];
   for (const item of raw.slice(0, limit)) {
     // A marked-content item carries no `str` at all; the transform's last two
     // entries are the run's translation, which is where it sits on the page.
@@ -55,8 +60,43 @@ function toItems(raw: RawItem[], limit: number): TextItem[] {
       width: item.width ?? 0,
       height: item.height ?? 0,
     });
+    turns.push(quarterTurn(item.transform));
   }
-  return items;
+  return { items, turns };
+}
+
+interface PageSize {
+  width: number;
+  height: number;
+}
+
+interface ComposedPage {
+  items: TextItem[];
+  /** The extent of the reading-order y axis — the page width after a quarter turn. */
+  height: number;
+  turned: boolean;
+  uncomposed: boolean;
+}
+
+/**
+ * Compose the page's shared rotation into its coordinates, when it has one.
+ *
+ * Only runs matching the dominant turn are remapped; a minority of upright
+ * runs on a rotated page keeps its raw position rather than being guessed at.
+ * With no dominant turn the page is left alone, and a rotated minority is
+ * reported so the omission is loud instead of silent.
+ */
+function composeTurn(items: TextItem[], turns: (QuarterTurn | undefined)[], size: PageSize): ComposedPage {
+  const turn = dominantTurn(turns);
+  if (turn === undefined) {
+    const rotated = turns.filter((t) => t !== undefined && t !== 0).length;
+    return { items, height: size.height, turned: false, uncomposed: rotated > turns.length * ROTATED_MINORITY };
+  }
+
+  const upright = items.map((item, i) =>
+    turns[i] === turn ? { ...item, ...uprightPlacement(item, turn, size.width, size.height) } : item,
+  );
+  return { items: upright, height: turn === 180 ? size.height : size.width, turned: true, uncomposed: false };
 }
 
 /**
@@ -73,21 +113,29 @@ async function readPage(
   pdf: PdfDocument,
   index: number,
   opts: ExtractOptions,
-): Promise<{ page: PageLines; truncated: boolean }> {
+): Promise<{ page: PageLines; truncated: boolean; turned: boolean; uncomposed: boolean }> {
   const page = await pdf.getPage(index);
   const content = await page.getTextContent();
   const cap = opts.limits.maxItemsPerPage;
-  const items = toItems(content.items, cap);
+  const { items, turns } = toItems(content.items, cap);
   // `rotation: 0` rather than the page's own: `/Rotate` turns the paper, not the
   // text, and the coordinates above are in unrotated space. A default viewport
   // reports 612 for a page 792 points tall, so the 12% band that marks page
   // furniture reached 30% down it and deleted repeated *body* lines as running
-  // headers. Height has to be measured in the space the glyphs are placed in.
-  const height = page.getViewport({ scale: 1, rotation: 0 }).height || DEFAULT_PAGE_HEIGHT;
+  // headers. Size has to be measured in the space the glyphs are placed in;
+  // text rotated *within* that space is `composeTurn`'s to put upright.
+  const viewport = page.getViewport({ scale: 1, rotation: 0 });
+  const size = {
+    width: viewport.width || DEFAULT_PAGE_WIDTH,
+    height: viewport.height || DEFAULT_PAGE_HEIGHT,
+  };
+  const composed = composeTurn(items, turns, size);
 
   return {
-    page: { index, height, lines: layoutPage(items, height) },
+    page: { index, height: composed.height, lines: layoutPage(composed.items, composed.height) },
     truncated: content.items.length > cap,
+    turned: composed.turned,
+    uncomposed: composed.uncomposed,
   };
 }
 
@@ -97,11 +145,21 @@ interface Findings {
   dropped: number;
   truncated: number;
   regions: number;
+  turned: number;
+  uncomposed: number;
 }
 
-function warningsFor({ textless, suppressed, dropped, truncated, regions }: Findings): string[] {
+const pageCount = (n: number): string => `${n} page${n === 1 ? '' : 's'}`;
+
+function warningsFor({ textless, suppressed, dropped, truncated, regions, turned, uncomposed }: Findings): string[] {
   const warnings: string[] = [];
   warnings.push('PDF structure is reconstructed from glyph positions — reading order is inferred');
+  if (turned > 0) {
+    warnings.push(`text on ${pageCount(turned)} is rotated a quarter turn; layout was composed in the text's frame`);
+  }
+  if (uncomposed > 0) {
+    warnings.push(`rotated text on ${pageCount(uncomposed)} was left in place and may read out of order`);
+  }
   if (textless > 0) {
     warnings.push(
       `${textless} page${textless === 1 ? ' has' : 's have'} no extractable text — they are probably scans`,
@@ -112,7 +170,7 @@ function warningsFor({ textless, suppressed, dropped, truncated, regions }: Find
   }
   if (dropped > 0) warnings.push(`stopped after the page limit; ${dropped} pages were not read`);
   if (truncated > 0) {
-    warnings.push(`${truncated} page${truncated === 1 ? '' : 's'} hit the per-page item cap and were cut short`);
+    warnings.push(`${pageCount(truncated)} hit the per-page item cap and were cut short`);
   }
   if (regions > 0) {
     warnings.push(
@@ -160,10 +218,14 @@ export async function extractPdf(
   const selection = selectPages(pdf.numPages, opts.pages, opts.limits.maxPages);
   const pages: PageLines[] = [];
   let truncated = 0;
+  let turned = 0;
+  let uncomposed = 0;
 
   for (const index of selection.pages) {
     const read = await readPage(pdf, index, opts);
     if (read.truncated) truncated += 1;
+    if (read.turned) turned += 1;
+    if (read.uncomposed) uncomposed += 1;
     pages.push(read.page);
   }
 
@@ -184,7 +246,7 @@ export async function extractPdf(
     format: 'pdf',
     options: opts,
     source,
-    warnings: warningsFor({ textless, suppressed, dropped: selection.dropped, truncated, regions }),
+    warnings: warningsFor({ textless, suppressed, dropped: selection.dropped, truncated, regions, turned, uncomposed }),
     sections,
   };
 }

@@ -138,9 +138,55 @@ def two_column_table(path: str) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# rotated text matrix — rotation must be composed before layout
+# --------------------------------------------------------------------------
+
+ROTATED_ROWS = [
+    ["FLOOR", "AREA", "UNITS", "VALUE"],
+    ["1ST", "8,411", "3", "0.7"],
+    ["2ND", "9,942", "2", "0.4"],
+    ["3RD", "7,655", "5", "1.2"],
+    ["4TH", "6,300", "1", "0.9"],
+]
+
+ROTATED_COLUMNS = [72, 180, 260, 330]
+
+
+def rotated_text(path: str) -> None:
+    """Text written with a 90-degree-rotated matrix, displayed upright via /Rotate 90.
+
+    The shape of a sideways-scanned-then-regenerated form: every run's matrix is
+    [0, s, -s, 0], one run per cell, rows stacked along user-space x. Reading the
+    raw coordinates as upright text groups a visual *column* into one line and
+    butt-joins its numbers.
+    """
+    from reportlab.pdfgen.canvas import Canvas
+
+    c = Canvas(path, pagesize=letter, invariant=1)
+    c.setTitle("Rotated assessment form")
+    c.setAuthor("slimdoc fixtures")
+    c.setSubject("text-matrix rotation")
+    c.setPageRotation(90)
+    c.setFont("Helvetica", 10)
+    c.saveState()
+    c.rotate(90)
+    # After rotate(90), drawString(u, v) lands at user-space (-v, u): u advances
+    # along user y (the rotated line), -v picks the user x the row sits at.
+    c.drawString(72, -80, "Floor area assessment, drawn sideways")
+    for row_index, row in enumerate(ROTATED_ROWS):
+        x_row = 110 + row_index * 16
+        for cell, start in zip(row, ROTATED_COLUMNS):
+            c.drawString(start, -x_row, cell)
+    c.restoreState()
+    c.showPage()
+    c.save()
+
+
 if __name__ == "__main__":
     justified_prose(os.path.join(HERE, "justified-prose.pdf"))
     two_column_table(os.path.join(HERE, "two-column-table.pdf"))
-    for name in ("justified-prose.pdf", "two-column-table.pdf"):
+    rotated_text(os.path.join(HERE, "rotated-text.pdf"))
+    for name in ("justified-prose.pdf", "two-column-table.pdf", "rotated-text.pdf"):
         path = os.path.join(HERE, name)
         print(f"wrote {name} ({os.path.getsize(path)} bytes)")
