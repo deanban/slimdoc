@@ -26,6 +26,7 @@ the code by construction. That is the entire job of this directory.
 ```
 make-pdf-layouts.py       ->  justified-prose.pdf      paragraph detection, unwrap
                               two-column-table.pdf     column detection vs a real table
+                              rotated-text.pdf         rotated text matrix composed upright
 make-pptx-inheritance.py  ->  inherited-bullets.pptx   placeholder inheritance chain
 ```
 
